@@ -1,7 +1,7 @@
 ---
-title: "Quote and QuoteApi: Core Data Models"
+title: "Quote Data Class and QuoteApi Interface API Reference"
 sidebarTitle: "Quote"
-description: "Reference for the Quote data class and the QuoteApi interface, including FakeQuoteApi's simulated latency, configurable failure rate, and hardcoded quote catalogue."
+description: "Reference for the Quote data class and QuoteApi interface, including FakeQuoteApi simulated latency, failure rate, and the hardcoded quote catalogue."
 ---
 
 `Quote` is the central data model representing a single programming quote with an ID, text, and author. `QuoteApi` is the interface that abstracts the source of quotes — whether a real backend or the bundled fake implementation — so the rest of the app never depends on transport details.

@@ -1,7 +1,7 @@
 ---
 title: "QuoteRepository and CachingQuoteRepository Reference"
 sidebarTitle: "QuoteRepository"
-description: "Reference for the QuoteRepository interface and its CachingQuoteRepository implementation, covering TTL caching, exponential-backoff retries, stale fallback, and mutex-guarded concurrency."
+description: "Reference for QuoteRepository and CachingQuoteRepository: TTL caching, exponential-backoff retries, stale fallback, and mutex-guarded concurrency."
 ---
 
 `QuoteRepository` is the interface your ViewModels depend on for all quote data. `CachingQuoteRepository` is the production implementation: it wraps `QuoteApi` with an in-memory TTL cache, exponential-backoff retries via `retryOnIoError`, and a stale-on-error fallback that keeps the app working offline after the first successful load.

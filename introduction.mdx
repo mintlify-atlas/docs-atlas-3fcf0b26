@@ -4,7 +4,7 @@ sidebarTitle: "Introduction"
 description: "Explore a production-ready Android quotes app built with Jetpack Compose and MVVM, paired with a GitHub Actions workflow that turns every PR into an interactive code review quiz."
 ---
 
-PR Quiz Demo is a two-in-one reference project. The first half is a fully functional Android app — a programming quotes reader built with Jetpack Compose, MVVM, Navigation3, manual dependency injection, and a caching data layer. The second half is a GitHub Actions workflow that automatically embeds a multiple-choice quiz into every pull request description, requiring reviewers to demonstrate genuine comprehension of the diff before the status check turns green. Together they form a practical template you can study, fork, and adapt: the app shows how modern Android pieces fit together, and the workflow shows how to make code review a learning exercise rather than a rubber-stamp.
+PR Quiz Demo is a two-in-one reference project. The first half is a fully functional Android app — a programming quotes reader built with Jetpack Compose, MVVM, Navigation3, manual dependency injection, and a caching data layer. The second half is a GitHub Actions workflow that grades multiple-choice quiz answers embedded in pull request descriptions, blocking the `pr-quiz` commit status until a reviewer (or the PR author) answers every question correctly. Together they form a practical template you can study, fork, and adapt: the app shows how modern Android pieces fit together, and the workflow shows how to make code review a learning exercise rather than a rubber-stamp.
 
 ## What's in the project
 
@@ -21,7 +21,7 @@ PR Quiz Demo is a two-in-one reference project. The first half is a fully functi
     title="PR Quiz Workflow"
     href="/pr-quiz/overview"
   >
-    A GitHub Actions script that posts a quiz to every PR description and blocks the merge status check until a reviewer answers all questions correctly.
+    A GitHub Actions script that grades quiz answers embedded in PR descriptions and blocks the `pr-quiz` commit status until all questions are answered correctly.
   </Card>
   <Card
     icon="database"

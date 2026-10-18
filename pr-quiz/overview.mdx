@@ -65,7 +65,7 @@ The workflow maintains a single commit status under the `pr-quiz` context. It mo
 
 | State | When it appears |
 |---|---|
-| `pending` | The quiz was found but not all questions have been answered yet, or a reviewer ticked multiple options for one question. |
+| `pending` | No quiz block is present in the PR description; not all questions have been answered yet; a reviewer ticked multiple options for one question; or the submitter is not an eligible reviewer. |
 | `failure` | All questions were answered but at least one answer was wrong. The bot posts explanations in a collapsible block. |
 | `success` | Every answer is correct. The pass is recorded in a hidden comment marker so it survives new commits. |
 

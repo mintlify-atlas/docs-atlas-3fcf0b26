@@ -1,5 +1,5 @@
 ---
-title: "How the PR Quiz Workflow Grades Answers"
+title: "How the PR Quiz Workflow Detects and Grades Answers"
 sidebarTitle: "How It Works"
 description: "A deep dive into the PR Quiz workflow's triggers, quiz detection, answer parsing, grading logic, pass persistence, and single-comment strategy."
 ---
@@ -97,7 +97,7 @@ The `id` field in the quiz JSON is what ties a pass to a specific set of questio
 This design means:
 
 - A `git push` after passing does **not** require the reviewer to re-answer, as long as the quiz block in the PR description is unchanged.
-- If the PR author regenerates the quiz (producing a new `id`), existing pass markers for the old `id` are ignored and the reviewer must answer the new questions.
+- If the PR author manually updates the quiz (producing a new `id`), existing pass markers for the old `id` are ignored and the reviewer must answer the new questions.
 - Deleting the bot comment removes the pass marker and resets the quiz to `pending`.
 
 ## Comment management

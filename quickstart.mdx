@@ -4,7 +4,7 @@ sidebarTitle: "Quickstart"
 description: "Clone the repo, open it in Android Studio, run the quotes app on an emulator or device, and optionally trigger the GitHub Actions PR quiz on your own fork."
 ---
 
-This guide walks you through cloning PR Quiz Demo, opening it in Android Studio, and running the quotes app on an emulator or physical device. If you want to see the GitHub Actions quiz in action, the final step shows you how to open a pull request on your own fork so the workflow posts a quiz automatically.
+This guide walks you through cloning PR Quiz Demo, opening it in Android Studio, and running the quotes app on an emulator or physical device. If you want to see the GitHub Actions quiz in action, the final step shows you how to open a pull request on your own fork so the workflow grades any quiz answers embedded in the PR description.
 
 ## Prerequisites
 
@@ -64,7 +64,7 @@ Before you start, make sure you have the following installed and configured:
 
     3. Open a **Pull Request** from `my-feature-branch` into your fork's `main` branch on GitHub.
 
-    The `PR Quiz` workflow triggers on `pull_request` events. Within a few seconds it posts a multiple-choice quiz inside the PR description based on the diff. Tick your answers in the checkboxes directly in the description, or post a comment starting with `/answer` (e.g. `/answer 1A 2C 3B`). The `pr-quiz` commit status turns green once all answers are correct.
+    The `PR Quiz` workflow triggers on `pull_request` events. It reads a multiple-choice quiz that must already be embedded in the PR description (between `<!-- pr-quiz:start -->` and `<!-- pr-quiz:end -->` markers, with a base64-encoded answer key in `<!-- pr-quiz-key:... -->`). Tick your answers in the checkboxes directly in the description, or post a comment starting with `/answer` (e.g. `/answer 1A 2C 3B`). The `pr-quiz` commit status turns green once all answers are correct. By default (`ALLOW_AUTHOR = true`), both the PR author and requested reviewers can submit answers.
   </Step>
 </Steps>
 

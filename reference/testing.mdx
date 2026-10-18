@@ -1,5 +1,5 @@
 ---
-title: "Testing Strategy and CachingQuoteRepositoryTest"
+title: "CachingQuoteRepository: Testing Strategy and Coverage"
 sidebarTitle: "Testing"
 description: "Unit tests for CachingQuoteRepository covering TTL caching, IO retry logic, non-retried exceptions, and stale-data fallback using kotlinx-coroutines-test."
 ---
@@ -24,7 +24,7 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 
 ## FakeApi Pattern
 
-Every test in `CachingQuoteRepositoryTest` uses an inner `FakeApi` instead of a real HTTP client. The design is a response queue: the constructor accepts a `MutableList` of suspend lambdas, each representing one API call. `fetchQuotes()` pops and invokes the first entry on every call, and increments a `calls` counter so assertions can verify exactly how many network requests were made.
+Every test in `CachingQuoteRepositoryTest` uses a private nested `FakeApi` instead of a real HTTP client. The design is a response queue: the constructor accepts a `MutableList` of suspend lambdas, each representing one API call. `fetchQuotes()` pops and invokes the first entry on every call, and increments a `calls` counter so assertions can verify exactly how many network requests were made.
 
 ```kotlin
 private class FakeApi(private val responses: MutableList<suspend () -> List<Quote>>) : QuoteApi {

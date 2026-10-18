@@ -1,7 +1,7 @@
 ---
 title: "retryOnIoError: Exponential Backoff for Network Calls"
-sidebarTitle: "retryOnIoError"
-description: "Reference for retryOnIoError, the suspending utility that retries a block on IOException using configurable exponential backoff while immediately rethrowing all other exceptions."
+sidebarTitle: "Retry"
+description: "Reference for retryOnIoError: a suspending utility retrying blocks on IOException with exponential backoff, rethrowing all other exceptions immediately."
 ---
 
 `retryOnIoError` is a suspending utility function that executes a block and automatically retries it on `IOException` using exponential backoff. Only connectivity-type errors are retried — any other exception is rethrown immediately, because non-IO failures (such as `IllegalStateException` or `NullPointerException`) indicate a programming error that will not resolve itself on the next attempt.

@@ -1,7 +1,7 @@
 ---
-title: "UI Layer: Compose Screens and ViewModels"
+title: "UI Layer: Stateless Compose Screens and ViewModels"
 sidebarTitle: "UI Layer"
-description: "How the PR Quiz Demo builds its UI with Jetpack Compose and Material3, including the QuoteListScreen, QuoteDetailScreen, and their ViewModel-driven state flows."
+description: "How the PR Quiz Demo builds its UI with Jetpack Compose and Material3, covering QuoteListScreen, QuoteDetailScreen, and their ViewModel-driven state flows."
 ---
 
 The UI layer is built entirely with **Jetpack Compose** and **Material3**. Each screen is a stateless composable that receives an immutable state object and emits user actions through plain Kotlin lambda callbacks. A paired ViewModel owns the mutable state and exposes it as a single `StateFlow<State>`, which the screen collects via `collectAsStateWithLifecycle()`. This split makes the screen composables trivial to preview and test in isolation from the ViewModel.
@@ -134,5 +134,5 @@ fun QuoteListRoot(
 `collectAsStateWithLifecycle()` from `androidx.lifecycle:lifecycle-runtime-compose` stops collection when the composable is not in the `STARTED` state (e.g., when the app is backgrounded), reducing unnecessary work and complementing `SharingStarted.WhileSubscribed(5000)` on the ViewModel side.
 
 <Tip>
-  For a full reference of every public method and property on the two ViewModels — including `onQueryChange`, `onRefresh`, `onToggleFavorite`, and `onToggleFavorite` on the detail side — see [QuoteListViewModel reference](/reference/quote-list-viewmodel) and [QuoteDetailViewModel reference](/reference/quote-detail-viewmodel).
+  For a full reference of every public method and property on the two ViewModels — including `onQueryChange`, `onRefresh`, and `onToggleFavorite` on the list side, and `onToggleFavorite` on the detail side — see [QuoteListViewModel reference](/reference/quote-list-viewmodel) and [QuoteDetailViewModel reference](/reference/quote-detail-viewmodel).
 </Tip>

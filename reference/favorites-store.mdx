@@ -1,7 +1,7 @@
 ---
-title: "FavoritesStore: Reactive Favorites Persistence"
+title: "FavoritesStore: Persisting Favorites with SharedPreferences"
 sidebarTitle: "FavoritesStore"
-description: "Reference for FavoritesStore and SharedPreferencesFavoritesStore, covering StateFlow reactivity, atomic in-memory updates, and synchronous SharedPreferences persistence."
+description: "Reference for FavoritesStore and SharedPreferencesFavoritesStore: StateFlow reactivity, atomic in-memory updates, and synchronous SharedPreferences writes."
 ---
 
 `FavoritesStore` manages which quote IDs the user has starred. It exposes the current set of favorites as a hot `StateFlow` so any screen observing it automatically reacts to changes the moment they happen — no polling, no manual refresh. The `SharedPreferencesFavoritesStore` implementation backs that reactive state with `SharedPreferences` for persistence across process restarts.
