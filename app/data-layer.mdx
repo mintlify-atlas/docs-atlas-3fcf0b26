@@ -1,0 +1,154 @@
+---
+title: "Data Layer: Caching, Retry, and Favorites"
+sidebarTitle: "Data Layer"
+description: "A deep-dive into CachingQuoteRepository, FavoritesStore, and retryOnIoError — the three components that form the PR Quiz Demo data layer."
+---
+
+The data layer is composed of three independent components: `CachingQuoteRepository` combines network fetching with an in-memory cache and stale-on-error fallback; `SharedPreferencesFavoritesStore` persists starred quote IDs locally and exposes them as a reactive `StateFlow`; and `retryOnIoError` is a small coroutine utility that wraps any suspending call with exponential-backoff retry logic. Together they insulate the UI layer from network conditions and storage details.
+
+## Quote Data Model
+
+The `Quote` data class is the core domain object shared across every layer:
+
+```kotlin
+data class Quote(val id: String, val text: String, val author: String)
+```
+
+All three fields are non-nullable strings. The `id` is the stable identifier used as a `LazyColumn` key, a navigation argument, and the key stored in `FavoritesStore`.
+
+The `QuoteApi` interface defines the single network contract. Any class that implements it can serve as the data source:
+
+```kotlin
+interface QuoteApi {
+  suspend fun fetchQuotes(): List<Quote>
+}
+```
+
+## CachingQuoteRepository
+
+`CachingQuoteRepository` is the only `QuoteRepository` implementation in the app. Its constructor exposes two parameters that make it easy to test:
+
+```kotlin
+class CachingQuoteRepository(
+  private val api: QuoteApi,
+  private val cacheTtlMillis: Long = 5 * 60 * 1000,
+  private val now: () -> Long = System::currentTimeMillis,
+) : QuoteRepository
+```
+
+The full `getQuotes()` implementation:
+
+```kotlin
+override suspend fun getQuotes(forceRefresh: Boolean): List<Quote> =
+  mutex.withLock {
+    val current = cached
+    if (!forceRefresh && current != null && now() - cachedAt < cacheTtlMillis) {
+      return@withLock current
+    }
+    try {
+      retryOnIoError { api.fetchQuotes() }.also {
+        cached = it
+        cachedAt = now()
+      }
+    } catch (e: Exception) {
+      current ?: throw e
+    }
+  }
+```
+
+There are four notable design points:
+
+- **`cacheTtlMillis` (default 5 minutes)** — as long as `now() - cachedAt < cacheTtlMillis` and `forceRefresh` is `false`, the call returns immediately from memory without hitting the network. Both the list and detail screens benefit from this: opening a detail after the list has already loaded costs zero network round-trips.
+- **`Mutex` lock** — `QuoteListViewModel` and `QuoteDetailViewModel` are created at the same time on a cold start, and both call `getQuotes()`. Without the lock a second network request would fire before the first one completes. With the lock the second coroutine suspends until the first has populated the cache, then returns the cached result immediately.
+- **Stale-on-error fallback** — the `catch` block checks whether a previous response (`current`) exists before re-throwing the exception. If the app has been used before and the network is temporarily unavailable, the user still sees the last known list of quotes rather than an error screen.
+- **`forceRefresh` parameter** — when the user taps the Refresh button, `QuoteListViewModel` calls `repository.getQuotes(forceRefresh = true)`, which skips the TTL check and always goes to the network. The result overwrites the cache so subsequent reads are fresh.
+
+`getQuote(id)` is a thin wrapper that delegates to `getQuotes()` and filters by ID:
+
+```kotlin
+override suspend fun getQuote(id: String): Quote? = getQuotes().firstOrNull { it.id == id }
+```
+
+## FakeQuoteApi
+
+`FakeQuoteApi` is the concrete `QuoteApi` used during development. It requires no backend and makes the demo self-contained:
+
+```kotlin
+class FakeQuoteApi(
+  private val random: Random = Random.Default,
+  private val failureRate: Double = 0.3,
+) : QuoteApi {
+
+  override suspend fun fetchQuotes(): List<Quote> {
+    delay(800)
+    if (random.nextDouble() < failureRate) throw IOException("Simulated network failure")
+    return QUOTES
+  }
+}
+```
+
+The 800 ms `delay` simulates realistic network latency so loading states are visible in the UI. The 30 % random failure rate exercises the retry logic and the stale-on-error fallback on every run without any special setup. The six hardcoded quotes cover enough variety to demonstrate search and favorites. Both `random` and `failureRate` are constructor-injected so unit tests can pass a seeded `Random` and set `failureRate = 0.0` for deterministic behaviour.
+
+## Retry Logic
+
+`retryOnIoError` is a top-level suspend function in the `data` package:
+
+```kotlin
+suspend fun <T> retryOnIoError(
+  attempts: Int = 3,
+  initialDelayMillis: Long = 500,
+  factor: Double = 2.0,
+  block: suspend () -> T,
+): T {
+  var delayMillis = initialDelayMillis
+  repeat(attempts - 1) {
+    try {
+      return block()
+    } catch (e: IOException) {
+      delay(delayMillis)
+      delayMillis = (delayMillis * factor).toLong()
+    }
+  }
+  return block()
+}
+```
+
+Key behaviours:
+
+- **Only retries `IOException`** — this is the type thrown for connectivity problems (no network, timeout, DNS failure). Any other exception — a `SerializationException`, `IllegalStateException`, or application error — is not retried and propagates immediately to the caller.
+- **Exponential backoff** — with the defaults, the delays between attempts are 500 ms, then 1 000 ms. The third attempt is the final one: if it throws, the exception propagates to the repository's `catch` block.
+- **Configurable** — all three parameters (`attempts`, `initialDelayMillis`, `factor`) can be overridden in tests to make retries instant and reduce test run times.
+
+## FavoritesStore
+
+The `FavoritesStore` interface keeps the ViewModel layer decoupled from the `SharedPreferences` implementation detail:
+
+```kotlin
+interface FavoritesStore {
+  val favoriteIds: StateFlow<Set<String>>
+
+  suspend fun setFavorite(id: String, isFavorite: Boolean)
+}
+```
+
+`SharedPreferencesFavoritesStore` is the production implementation:
+
+```kotlin
+class SharedPreferencesFavoritesStore(private val prefs: SharedPreferences) : FavoritesStore {
+
+  private val _favoriteIds =
+    MutableStateFlow(prefs.getStringSet(KEY, emptySet()).orEmpty().toSet())
+  override val favoriteIds: StateFlow<Set<String>> = _favoriteIds.asStateFlow()
+
+  override suspend fun setFavorite(id: String, isFavorite: Boolean) {
+    val updated = _favoriteIds.updateAndGet { if (isFavorite) it + id else it - id }
+    withContext(Dispatchers.IO) { prefs.edit().putStringSet(KEY, updated).commit() }
+  }
+
+  private companion object {
+    const val KEY = "favorite_quote_ids"
+  }
+}
+```
+
+On construction, the current `SharedPreferences` set is read synchronously and used as the initial `MutableStateFlow` value, so the store is immediately ready with the persisted state. `updateAndGet` atomically applies the add/remove operation and returns the new set, which is then committed to disk on `Dispatchers.IO`. Because `favoriteIds` is a hot `StateFlow`, any collector — both `QuoteListViewModel` and `QuoteDetailViewModel` — reacts to a toggle immediately without polling.

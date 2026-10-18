@@ -1,0 +1,111 @@
+---
+title: "How the PR Quiz Workflow Grades Answers"
+sidebarTitle: "How It Works"
+description: "A deep dive into the PR Quiz workflow's triggers, quiz detection, answer parsing, grading logic, pass persistence, and single-comment strategy."
+---
+
+This page covers the internal mechanics of the PR Quiz GitHub Actions workflow — how it decides when to run, how it finds and decodes the quiz embedded in a PR description, how it parses answers from both checkboxes and comments, and how it keeps the PR timeline clean by managing a single grading comment.
+
+## Triggers
+
+The workflow listens for two GitHub event types:
+
+**`pull_request`** with types `[opened, edited, synchronize, reopened]` — fires whenever a PR is first created, its description is edited, a new commit is pushed to the branch, or the PR is reopened. This covers the checkbox-ticking flow: when a reviewer checks a box, GitHub fires an `edited` event with the previous body in `context.payload.changes.body.from`, which the workflow diffs to detect a tick change.
+
+**`issue_comment` (created)** — fires whenever any comment is posted on a PR. The workflow's job-level `if` condition filters this down to comments where the body starts with `/answer`, so unrelated review discussion does not trigger a grading run.
+
+```yaml
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  issue_comment:
+    types: [created]
+```
+
+The `issue_comment` path also checks `github.event.issue.pull_request` to confirm the comment is on a pull request rather than a plain issue, since GitHub uses the same event for both.
+
+## Quiz detection
+
+Before any grading can happen, the workflow must find and decode the quiz embedded in the PR body.
+
+1. **Locate the quiz block** — the workflow uses a regex to extract everything between the `<!-- pr-quiz:start -->` and `<!-- pr-quiz:end -->` HTML comment markers. If this block is absent, no quiz exists.
+
+2. **Extract the base64 key** — inside the quiz block, another regex finds `<!-- pr-quiz-key:BASE64 -->` and extracts the encoded string, stripping any whitespace introduced by line wrapping.
+
+3. **Decode and parse** — the base64 string is decoded with `Buffer.from(key, 'base64').toString('utf8')` and parsed as JSON. The resulting object has the shape:
+
+```json
+{
+  "id": "abc123",
+  "answers": {
+    "1": "B",
+    "2": "A",
+    "3": "C"
+  },
+  "explanations": {
+    "1": "The mutex prevents duplicate API calls from concurrent screens.",
+    "2": "StateFlow with WhileSubscribed(5000) survives config changes.",
+    "3": "retryOnIoError only retries IOException, not all exceptions."
+  }
+}
+```
+
+4. **No quiz found** — if the PR body contains no quiz block, the workflow immediately sets the commit status to `pending` with the description `"No quiz found in the PR description"` and exits. This means adding or removing the quiz block itself changes the status.
+
+## Checkbox parsing
+
+When the trigger is a `pull_request` event, the workflow reads answers from the checkboxes in the PR body using the `parseTicks()` function. It processes the quiz block line by line:
+
+- A line matching `/^\*\*(\d+)\.\s/` signals the start of a new question; the question number is saved as the current context.
+- A line matching `/^\s*[-*] \[([ xX])\] \*\*([A-F])\)\*\*/` is a checkbox option. If the bracket contains `x` or `X` (not a space), that letter is recorded as a selected answer for the current question.
+
+The output is a map of `{ questionNumber: ["A"] }`. A question with an empty array means unanswered; a question with two or more entries means the reviewer ticked multiple boxes.
+
+## Grading flow
+
+<Steps>
+  <Step title="Check for an existing pass">
+    Before doing any work, the workflow fetches all comments on the PR and filters to those posted by the bot account (`github-actions[bot]`). If any bot comment contains `<!-- pr-quiz-pass:{id} -->` where `id` matches the current quiz, the workflow immediately sets the commit status to `success` and returns. This short-circuit is what makes passes persist across new commits.
+  </Step>
+  <Step title="Determine the submitter">
+    For `issue_comment` events, the submitter is `context.payload.comment.user.login`. For `pull_request` events (checkbox ticks), the submitter is `context.payload.sender.login` — the person who edited the PR body.
+  </Step>
+  <Step title="Verify eligibility">
+    The workflow builds an allowed set from three sources: the PR's current `requested_reviewers`, the `user.login` of every past review (since GitHub removes a reviewer from `requested_reviewers` once they submit a formal review), and — when `ALLOW_AUTHOR` is `true` — the PR author. If the submitter is not in this set, the workflow posts a message explaining that only requested reviewers (or the author) may answer, sets status to `pending`, and exits without grading.
+  </Step>
+  <Step title="Parse the answers">
+    For the `issue_comment` path, the workflow parses the first line of the comment after stripping `/answer`, matching every `<digits><letter>` pair (e.g. `1B`, `2A`). If any question from the quiz is missing from this map, the bot posts a hint listing the missing question numbers and exits without grading. For the checkbox path, `parseTicks()` already produced the answer map; it is used directly.
+  </Step>
+  <Step title="Grade the answers">
+    The workflow iterates over every question key in `quiz.answers` and compares the submitted letter to the correct answer. Any question where they do not match is collected into a `wrong` array.
+  </Step>
+  <Step title="Report the result">
+    If `wrong` is empty, the workflow sets the commit status to `success` and posts (or updates) the result comment with a ✅ message that includes the pass marker. If `wrong` is non-empty, the status is set to `failure` and the comment lists the wrong question numbers plus a collapsible `<details>` block containing the explanations from the quiz JSON.
+  </Step>
+</Steps>
+
+## Pass persistence
+
+The pass mechanism relies on a hidden HTML comment embedded in the bot's result comment body:
+
+```
+<!-- pr-quiz-pass:abc123 -->
+```
+
+The `id` field in the quiz JSON is what ties a pass to a specific set of questions. On every subsequent workflow run — whether triggered by a new commit, a PR edit, or an unrelated comment — the workflow scans existing bot comments for this marker before doing any grading. If found, it short-circuits to `success` immediately.
+
+This design means:
+
+- A `git push` after passing does **not** require the reviewer to re-answer, as long as the quiz block in the PR description is unchanged.
+- If the PR author regenerates the quiz (producing a new `id`), existing pass markers for the old `id` are ignored and the reviewer must answer the new questions.
+- Deleting the bot comment removes the pass marker and resets the quiz to `pending`.
+
+## Comment management
+
+To avoid cluttering the PR timeline, the workflow maintains exactly one grading result comment. It identifies this comment using a hidden marker in the comment body:
+
+```
+<!-- pr-quiz-result -->
+```
+
+On every grading run, the workflow looks for an existing bot comment that contains this marker. If one exists, it calls `updateComment` to overwrite its body in-place. If none exists (first grading attempt), it calls `createComment`. This means ticking boxes, getting them wrong, and re-ticking generates only one comment thread, updated silently each time.

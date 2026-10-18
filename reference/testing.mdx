@@ -1,0 +1,198 @@
+---
+title: "Testing Strategy and CachingQuoteRepositoryTest"
+sidebarTitle: "Testing"
+description: "Unit tests for CachingQuoteRepository covering TTL caching, IO retry logic, non-retried exceptions, and stale-data fallback using kotlinx-coroutines-test."
+---
+
+The project includes unit tests for `CachingQuoteRepository` that cover the full surface area of its caching and retry contract: TTL-based cache hits and misses, automatic retry on `IOException`, immediate propagation of non-IO errors, and stale-data fallback when a forced refresh fails. Tests use `kotlinx-coroutines-test` for structured concurrency, which means coroutines run eagerly in a controlled test scope — no real timers, no `Thread.sleep()`.
+
+## Test Dependencies
+
+The following dependencies are used by the test suite, as declared in `gradle/libs.versions.toml`:
+
+| Artifact | Version |
+|---|---|
+| `junit:junit` | `4.13.2` |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-test` | `1.10.2` |
+
+Both are declared in the `[libraries]` block of the version catalog and applied as `testImplementation` dependencies in the app module:
+
+```toml
+junit = { module = "junit:junit", version.ref = "junit" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+```
+
+## FakeApi Pattern
+
+Every test in `CachingQuoteRepositoryTest` uses an inner `FakeApi` instead of a real HTTP client. The design is a response queue: the constructor accepts a `MutableList` of suspend lambdas, each representing one API call. `fetchQuotes()` pops and invokes the first entry on every call, and increments a `calls` counter so assertions can verify exactly how many network requests were made.
+
+```kotlin
+private class FakeApi(private val responses: MutableList<suspend () -> List<Quote>>) : QuoteApi {
+  var calls = 0
+
+  override suspend fun fetchQuotes(): List<Quote> {
+    calls++
+    return responses.removeAt(0).invoke()
+  }
+}
+```
+
+This design has several advantages over a mocking framework:
+
+- **Sequenced control**: each call can return a different value or throw a different exception without conditional logic.
+- **Exact call counting**: `api.calls` is a plain `Int` — no verify DSL required.
+- **Lambdas for exceptions**: a failing response is just `{ throw IOException() }`, which can be defined inline or extracted to a `val` and reused across multiple positions in the list.
+
+<Note>
+  If the test exhausts all responses and `fetchQuotes()` is called again, `removeAt(0)` will throw an `IndexOutOfBoundsException`. This acts as an implicit assertion — an unexpected extra call fails the test immediately rather than returning a default value silently.
+</Note>
+
+## Test Cases
+
+<AccordionGroup>
+  <Accordion title="returnsCachedQuotesWithinTtl — only 1 API call within TTL">
+    Verifies that calling `getQuotes()` twice within the TTL window results in only one network request. The second call is served from the in-memory cache.
+
+    ```kotlin
+    @Test
+    fun returnsCachedQuotesWithinTtl() = runTest {
+      val api = FakeApi(responses = mutableListOf({ quotes }))
+      val repository = CachingQuoteRepository(api, cacheTtlMillis = 1000, now = { time })
+
+      repository.getQuotes()
+      time = 999
+      repository.getQuotes()
+
+      assertEquals(1, api.calls)
+    }
+    ```
+
+    The TTL is set to 1000 ms. The clock is advanced to 999 ms before the second call — still within the window — so the cache entry remains valid. Only the single response lambda provided to `FakeApi` is ever consumed.
+  </Accordion>
+
+  <Accordion title="refetchesAfterTtlExpires — 2 API calls once TTL boundary is crossed">
+    Verifies that calling `getQuotes()` exactly at the TTL boundary triggers a cache miss and a second network request.
+
+    ```kotlin
+    @Test
+    fun refetchesAfterTtlExpires() = runTest {
+      val api = FakeApi(responses = mutableListOf({ quotes }, { quotes }))
+      val repository = CachingQuoteRepository(api, cacheTtlMillis = 1000, now = { time })
+
+      repository.getQuotes()
+      time = 1000
+      repository.getQuotes()
+
+      assertEquals(2, api.calls)
+    }
+    ```
+
+    The clock is advanced to exactly 1000 ms — equal to `cacheTtlMillis`. The repository treats this as expired (not less-than), so the second call fetches fresh data. Two response lambdas are provided and both are consumed.
+  </Accordion>
+
+  <Accordion title="retriesIoErrorsBeforeSucceeding — 3 total calls, correct data returned">
+    Verifies that `IOException` failures trigger retries, and that the repository returns the correct data once a successful response is eventually received.
+
+    ```kotlin
+    @Test
+    fun retriesIoErrorsBeforeSucceeding() = runTest {
+      val api = FakeApi(
+        responses = mutableListOf(
+          { throw IOException() },
+          { throw IOException() },
+          { quotes }
+        )
+      )
+      val repository = CachingQuoteRepository(api, now = { time })
+
+      assertEquals(quotes, repository.getQuotes())
+      assertEquals(3, api.calls)
+    }
+    ```
+
+    The first two calls throw `IOException`. The repository retries both times and succeeds on the third attempt. The final return value equals the original `quotes` list, confirming the successful response is propagated correctly.
+  </Accordion>
+
+  <Accordion title="doesNotRetryNonIoErrors — 1 API call, exception propagated">
+    Verifies that a non-IO exception (here `IllegalStateException`) is **not** retried. The repository makes exactly one call and lets the exception propagate to the caller.
+
+    ```kotlin
+    @Test
+    fun doesNotRetryNonIoErrors() = runTest {
+      val api = FakeApi(responses = mutableListOf({ throw IllegalStateException() }, { quotes }))
+      val repository = CachingQuoteRepository(api, now = { time })
+
+      runCatching { repository.getQuotes() }
+
+      assertEquals(1, api.calls)
+    }
+    ```
+
+    The second response lambda (`{ quotes }`) is never reached. `runCatching` is used to swallow the propagated exception so the test does not fail on the throw — the assertion on `api.calls` is the meaningful check. Only errors that signal transient network conditions (`IOException`) qualify for retry.
+  </Accordion>
+
+  <Accordion title="returnsStaleQuotesWhenRefreshFails — same list reference returned">
+    Verifies that when a forced refresh fails (after exhausting retries), the repository returns the previously cached data rather than throwing.
+
+    ```kotlin
+    @Test
+    fun returnsStaleQuotesWhenRefreshFails() = runTest {
+      val failing: suspend () -> List<Quote> = { throw IOException() }
+      val api = FakeApi(
+        responses = mutableListOf({ quotes }, failing, failing, failing)
+      )
+      val repository = CachingQuoteRepository(api, now = { time })
+
+      val first = repository.getQuotes()
+      val refreshed = repository.getQuotes(forceRefresh = true)
+
+      assertSame(first, refreshed)
+    }
+    ```
+
+    The initial load succeeds. The forced refresh then triggers three `IOException`s (one attempt + two retries). Rather than surfacing an error, the repository falls back to the stale cached list. `assertSame` is used intentionally — it checks **reference equality**, confirming the repository returned the exact same `List` object that was cached, not a copy.
+  </Accordion>
+</AccordionGroup>
+
+## Injectable Clock
+
+`CachingQuoteRepository` accepts a `now: () -> Long` parameter instead of calling `System.currentTimeMillis()` directly:
+
+```kotlin
+CachingQuoteRepository(api, cacheTtlMillis = 1000, now = { time })
+```
+
+In the test class, `time` is a plain `var` initialized to `0L`:
+
+```kotlin
+private var time = 0L
+```
+
+Advancing the clock is as simple as assigning a new value:
+
+```kotlin
+time = 999   // still within TTL
+time = 1000  // exactly at TTL boundary — triggers a cache miss
+```
+
+This approach avoids the complexity of `advanceTimeBy()` or `TestCoroutineScheduler` for pure cache-expiry logic. Because the TTL check is a simple comparison against `now()`, there is no need for real coroutine time — the test controls time directly through the lambda, making each test case self-contained and instantaneous.
+
+<Tip>
+  This pattern is sometimes called a **functional clock** or **clock injection**. It is particularly effective when the time-dependent code is synchronous (a comparison, not a `delay()`). For code that uses `delay()`, prefer `kotlinx-coroutines-test`'s `TestScope.advanceTimeBy()`.
+</Tip>
+
+## Running Tests
+
+Run all unit tests for the app module with:
+
+```bash
+./gradlew :app:test
+```
+
+Test results are written to `app/build/reports/tests/testDebugUnitTest/index.html`.
+
+## Extending Coverage
+
+<Tip>
+  To add ViewModel-level tests, use `kotlinx-coroutines-test`'s `TestScope` as the `viewModelScope` replacement. For asserting sequences of `StateFlow` emissions — for example, verifying that `QuoteListState` transitions from `isLoading = true` to `isLoading = false` — consider adding the [Turbine](https://github.com/cashapp/turbine) library (`app.cash.turbine:turbine`). Turbine provides a `test {}` extension on `Flow` that lets you call `awaitItem()` for each expected emission, making multi-step state assertion tests concise and readable.
+</Tip>

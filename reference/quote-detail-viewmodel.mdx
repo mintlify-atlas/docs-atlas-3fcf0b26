@@ -1,0 +1,143 @@
+---
+title: "QuoteDetailViewModel: Single Quote with Favorite State"
+sidebarTitle: "QuoteDetailViewModel"
+description: "Resolves a single quote by ID from the repository and combines it with live favorites data to produce a reactive QuoteDetailState sealed interface."
+---
+
+`QuoteDetailViewModel` manages a single quote's detail view. It resolves the quote by ID from the repository and combines it with the reactive favorites stream to produce a `QuoteDetailState`. The state is a sealed interface with three variants — `Loading`, `NotFound`, and `Loaded` — so the UI can exhaustively render every possible situation without any nullable fields or boolean flags.
+
+## Constructor
+
+<ParamField path="quoteId" type="String" required>
+  The ID of the quote to display. This value is fixed for the lifetime of the ViewModel; it is captured in the `init` block when `repository.getQuote(quoteId)` is called, and again in `onToggleFavorite()` when the favorites store is updated.
+</ParamField>
+
+<ParamField path="repository" type="QuoteRepository" required>
+  Used to resolve the quote via `getQuote(id: String): Quote?`. The call is made once in `init`, wrapped in `runCatching`, and the result stored in a private `MutableStateFlow<Result<Quote?>?>`.
+</ParamField>
+
+<ParamField path="favoritesStore" type="FavoritesStore" required>
+  Provides the reactive `favoriteIds: StateFlow<Set<String>>` stream. The ViewModel combines this with the fetched quote result so that `Loaded.isFavorite` updates in real time when the user stars or unstars the quote from a different screen.
+</ParamField>
+
+## QuoteDetailState
+
+`QuoteDetailState` is a sealed interface. Every possible screen condition maps to exactly one variant, and the Composable uses a `when` expression to render each one.
+
+```kotlin
+sealed interface QuoteDetailState {
+  data object Loading : QuoteDetailState
+  data object NotFound : QuoteDetailState
+  data class Loaded(val quote: Quote, val isFavorite: Boolean) : QuoteDetailState
+}
+```
+
+### Loading
+
+```kotlin
+data object Loading : QuoteDetailState
+```
+
+The initial state, emitted while the repository fetch is in progress. The detail screen renders a centered `CircularProgressIndicator` for this variant. Because `quote` is initialized to `null` and the `combine()` checks for `null` before anything else, this variant is emitted from the very first frame.
+
+---
+
+### NotFound
+
+```kotlin
+data object NotFound : QuoteDetailState
+```
+
+Emitted when the repository returned a result but the quote resolved to `null` (i.e., the ID does not match any known quote). It is also emitted when `runCatching` captures an exception — a failed `Result` means `getOrNull()` returns `null`, which triggers this branch. The detail screen renders the message `"This quote doesn't exist anymore."` for this variant.
+
+<Warning>
+  `NotFound` covers both the "quote was deleted" case and the "network failed with no cache" case. There is no separate error screen. If you need to distinguish these two situations, consider adding a dedicated `Error` variant to the sealed interface.
+</Warning>
+
+---
+
+### Loaded
+
+```kotlin
+data class Loaded(val quote: Quote, val isFavorite: Boolean) : QuoteDetailState
+```
+
+Emitted when the quote was fetched successfully and a non-null `Quote` was returned.
+
+<ResponseField name="quote" type="Quote" required>
+  The fully resolved quote, with `id: String`, `text: String`, and `author: String`.
+</ResponseField>
+
+<ResponseField name="isFavorite" type="Boolean" required>
+  `true` when `quoteId` is present in `favoritesStore.favoriteIds` at the time this state was produced. This value reacts to changes from any screen — if the user stars the same quote on the list screen while the detail screen is in the back stack, the button label on the detail screen updates as soon as the back stack entry is resumed.
+</ResponseField>
+
+## state
+
+```kotlin
+val state: StateFlow<QuoteDetailState>
+```
+
+The observable UI state for the detail screen. It is built by combining the private `quote: MutableStateFlow<Result<Quote?>?>` with `favoritesStore.favoriteIds`:
+
+```kotlin
+val state: StateFlow<QuoteDetailState> =
+  combine(quote, favoritesStore.favoriteIds) { quote, favoriteIds ->
+      when {
+        quote == null -> QuoteDetailState.Loading
+        quote.getOrNull() == null -> QuoteDetailState.NotFound
+        else -> QuoteDetailState.Loaded(quote.getOrThrow()!!, quoteId in favoriteIds)
+      }
+    }
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), QuoteDetailState.Loading)
+```
+
+The three branches of the `when` expression map directly to the three sealed variants. The `favoriteIds` set is checked inline — there is no separate boolean field tracked in the ViewModel.
+
+<Info>
+  Like `QuoteListViewModel`, this flow uses `SharingStarted.WhileSubscribed(5000)`. The 5-second grace period means a screen rotation does not re-trigger the repository fetch because the ViewModel survives the configuration change and the Composable resubscribes well within the window.
+</Info>
+
+## onToggleFavorite
+
+```kotlin
+fun onToggleFavorite()
+```
+
+Flips the favorite state for `quoteId`. The method reads `favoritesStore.favoriteIds.value` synchronously to determine the current state, then calls `favoritesStore.setFavorite(quoteId, newState)` inside a `viewModelScope` coroutine:
+
+```kotlin
+fun onToggleFavorite() {
+  viewModelScope.launch {
+    favoritesStore.setFavorite(quoteId, quoteId !in favoritesStore.favoriteIds.value)
+  }
+}
+```
+
+Because `favoritesStore.favoriteIds` is a `StateFlow`, the `combine()` driving `state` will emit a new `Loaded` value automatically after the store updates, toggling the button label without any additional ViewModel logic.
+
+## ViewModel Scoping
+
+`QuoteDetailViewModel` is scoped to its **navigation back stack entry** via `rememberViewModelStoreNavEntryDecorator` from the `androidx.lifecycle:lifecycle-viewmodel-navigation3` library. This means:
+
+- A fresh instance is created each time the user navigates to a detail screen.
+- The instance is automatically cleared when the user presses Back and the back stack entry is removed.
+- Two simultaneous detail screens (if the navigation stack allows it) each get their own isolated ViewModel instance.
+
+<Note>
+  Because the ViewModel is tied to the back stack entry rather than the `Activity`, it is also destroyed on process death. On process restoration, a new ViewModel is created and the repository fetch runs again from scratch.
+</Note>
+
+## Error Handling
+
+The repository call is wrapped in `runCatching`:
+
+```kotlin
+init {
+  viewModelScope.launch {
+    quote.value = runCatching { repository.getQuote(quoteId) }
+  }
+}
+```
+
+This means the ViewModel itself never throws. Any exception from the repository — network timeout, parse error, etc. — is captured as a failed `Result` and stored in `quote`. The `combine()` expression checks `quote.getOrNull() == null`, which is `true` for both a successful `null` return (quote not found) and a failed `Result` (exception thrown). Both cases resolve to `QuoteDetailState.NotFound`.

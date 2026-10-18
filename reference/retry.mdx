@@ -1,0 +1,111 @@
+---
+title: "retryOnIoError: Exponential Backoff for Network Calls"
+sidebarTitle: "retryOnIoError"
+description: "Reference for retryOnIoError, the suspending utility that retries a block on IOException using configurable exponential backoff while immediately rethrowing all other exceptions."
+---
+
+`retryOnIoError` is a suspending utility function that executes a block and automatically retries it on `IOException` using exponential backoff. Only connectivity-type errors are retried — any other exception is rethrown immediately, because non-IO failures (such as `IllegalStateException` or `NullPointerException`) indicate a programming error that will not resolve itself on the next attempt.
+
+## Signature
+
+```kotlin
+suspend fun <T> retryOnIoError(
+    attempts: Int = 3,
+    initialDelayMillis: Long = 500,
+    factor: Double = 2.0,
+    block: suspend () -> T,
+): T
+```
+
+## Parameters
+
+<ParamField path="attempts" type="Int" default="3">
+  Total number of attempts, including the first. With the default of `3`, the block is called once immediately, and if that fails with `IOException` it is retried up to two more times. Set to `1` to disable retries entirely.
+</ParamField>
+
+<ParamField path="initialDelayMillis" type="Long" default="500">
+  Duration to wait before the **second** attempt (the first retry), in milliseconds. Each subsequent delay is multiplied by `factor`. This value must be positive.
+</ParamField>
+
+<ParamField path="factor" type="Double" default="2.0">
+  Multiplier applied to the delay after each failed attempt. With the default of `2.0` and `initialDelayMillis = 500`, the delays follow the sequence 500 ms, 1000 ms, 2000 ms, and so on.
+</ParamField>
+
+<ParamField path="block" type="suspend () -> T" required>
+  The suspending operation to execute. Typically a single API call, such as `api.fetchQuotes()`. The block is called once immediately and then re-called after each backoff delay until it succeeds or `attempts` is exhausted.
+</ParamField>
+
+## Returns
+
+<ResponseField name="T" type="T">
+  The value returned by `block` on the first attempt that completes without throwing.
+</ResponseField>
+
+## Throws
+
+- Any exception that is **not** an `IOException` — rethrown immediately from the first failed attempt, without waiting for or consuming any remaining attempts.
+- The `IOException` from the **final** attempt, if every attempt fails with an `IOException`.
+
+---
+
+## Retry schedule
+
+The table below shows the delay before each attempt under the default parameters (`initialDelayMillis = 500`, `factor = 2.0`, `attempts = 3`):
+
+| Attempt | Delay before attempt |
+|---------|----------------------|
+| 1st     | none                 |
+| 2nd     | 500 ms               |
+| 3rd     | 1 000 ms             |
+
+If all three attempts fail, the `IOException` from the third attempt is rethrown to the caller. The total worst-case wait before the exception surfaces is **1 500 ms** (500 + 1 000).
+
+---
+
+## Usage example
+
+`CachingQuoteRepository` wraps every API call in `retryOnIoError` using the defaults:
+
+```kotlin
+retryOnIoError { api.fetchQuotes() }
+```
+
+Passing custom parameters — for example, to add a fourth attempt with a longer initial delay during a background sync — looks like this:
+
+```kotlin
+retryOnIoError(attempts = 4, initialDelayMillis = 1_000, factor = 1.5) {
+    api.fetchQuotes()
+}
+```
+
+<Note>
+  Only `IOException` is retried because network errors are transient: a dropped connection or a momentary server blip will typically resolve itself within seconds, making a retry worthwhile. In contrast, `IllegalStateException`, `NullPointerException`, or other non-IO exceptions indicate a bug in the calling code. Retrying them would waste time, obscure the stack trace, and produce the same failure on every attempt.
+</Note>
+
+---
+
+## Implementation
+
+The full source of `retryOnIoError` from `Retry.kt`:
+
+```kotlin
+suspend fun <T> retryOnIoError(
+    attempts: Int = 3,
+    initialDelayMillis: Long = 500,
+    factor: Double = 2.0,
+    block: suspend () -> T,
+): T {
+    var delayMillis = initialDelayMillis
+    repeat(attempts - 1) {
+        try {
+            return block()
+        } catch (e: IOException) {
+            delay(delayMillis)
+            delayMillis = (delayMillis * factor).toLong()
+        }
+    }
+    return block()
+}
+```
+
+The loop runs `attempts - 1` times. Each iteration tries the block and, if an `IOException` is caught, suspends for `delayMillis` before doubling the delay for the next iteration. After the loop, `block()` is called one final time without a `try/catch` — if this last attempt throws, the exception propagates directly to the caller.

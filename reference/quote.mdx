@@ -1,0 +1,81 @@
+---
+title: "Quote and QuoteApi: Core Data Models"
+sidebarTitle: "Quote"
+description: "Reference for the Quote data class and the QuoteApi interface, including FakeQuoteApi's simulated latency, configurable failure rate, and hardcoded quote catalogue."
+---
+
+`Quote` is the central data model representing a single programming quote with an ID, text, and author. `QuoteApi` is the interface that abstracts the source of quotes — whether a real backend or the bundled fake implementation — so the rest of the app never depends on transport details.
+
+## Quote
+
+`Quote` is a plain Kotlin data class. Because it is immutable and has no business logic, it can be safely shared across threads, stored in `StateFlow`s, and compared by value in tests.
+
+```kotlin
+data class Quote(val id: String, val text: String, val author: String)
+```
+
+<ResponseField name="id" type="String" required>
+  Unique identifier for the quote. Used as the navigation argument when opening the detail screen and as the key stored in `FavoritesStore`.
+</ResponseField>
+
+<ResponseField name="text" type="String" required>
+  The body of the quote, without attribution or punctuation added by the app.
+</ResponseField>
+
+<ResponseField name="author" type="String" required>
+  The person who said or wrote the quote, displayed as a by-line beneath the quote text.
+</ResponseField>
+
+---
+
+## QuoteApi
+
+`QuoteApi` defines the single fetch operation that any quote data source must implement. Callers never construct a `QuoteApi` directly; the concrete type is injected through `AppContainer`.
+
+```kotlin
+interface QuoteApi {
+    suspend fun fetchQuotes(): List<Quote>
+}
+```
+
+<ResponseField name="fetchQuotes" type="suspend () -> List<Quote>">
+  Suspending function that returns all available quotes. The returned list is unordered; the UI is responsible for any sorting or filtering. Throws `IOException` on connectivity failure, which `CachingQuoteRepository` catches and retries via `retryOnIoError`.
+</ResponseField>
+
+---
+
+## FakeQuoteApi
+
+`FakeQuoteApi` is the bundled stand-in for a real backend. It simulates realistic network behaviour — including latency and intermittent failures — so the rest of the architecture can be exercised without a live server.
+
+```kotlin
+class FakeQuoteApi(
+    private val random: Random = Random.Default,
+    private val failureRate: Double = 0.3,
+) : QuoteApi
+```
+
+<ParamField path="random" type="Random" default="Random.Default">
+  Random number generator used to determine whether to simulate a failure on each call. Inject a seeded `Random` instance in tests to make outcomes deterministic.
+</ParamField>
+
+<ParamField path="failureRate" type="Double" default="0.3">
+  Probability of throwing `IOException` on any given call. `0.0` means the call never fails; `1.0` means it always fails. The default of `0.3` means roughly one in three calls fails, which is enough to exercise the retry and stale-cache paths in `CachingQuoteRepository` during normal use.
+</ParamField>
+
+Every successful call suspends for **800 ms** before returning, simulating a realistic round-trip over a mobile network.
+
+`FakeQuoteApi` returns the following six hardcoded quotes:
+
+| ID | Author | Text |
+|----|--------|------|
+| `1` | Edsger W. Dijkstra | Simplicity is prerequisite for reliability. |
+| `2` | Donald Knuth | Premature optimization is the root of all evil. |
+| `3` | Kent Beck | Make it work, make it right, make it fast. |
+| `4` | Linus Torvalds | Talk is cheap. Show me the code. |
+| `5` | Harold Abelson | Programs must be written for people to read. |
+| `6` | Martin Fowler | Any fool can write code that a computer can understand. |
+
+<Note>
+  `FakeQuoteApi` is intentionally unreliable. The combination of the 800 ms delay and the 30 % failure rate is designed to showcase two specific behaviours of `CachingQuoteRepository`: the exponential-backoff retry loop in `retryOnIoError`, and the stale-cache fallback that keeps the app usable after a successful first load even when all subsequent refresh attempts fail.
+</Note>

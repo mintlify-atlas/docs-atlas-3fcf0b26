@@ -1,0 +1,115 @@
+---
+title: "Android App Architecture: MVVM and Clean Layers"
+sidebarTitle: "Architecture"
+description: "How the PR Quiz Demo app is structured using MVVM, unidirectional data flow, and manual dependency injection via a plain AppContainer class."
+---
+
+The PR Quiz Demo app is built around the **Model-View-ViewModel (MVVM)** pattern with **unidirectional data flow (UDF)**. UI state flows downward: each screen observes a `StateFlow<State>` exposed by its ViewModel and re-renders whenever that state changes. User interactions flow upward as discrete callbacks (lambda functions), keeping the Compose composables entirely stateless and straightforward to preview and test.
+
+## Layer Overview
+
+The app is divided into three clearly separated layers, each with a single responsibility:
+
+- **UI layer** — Jetpack Compose screens (`QuoteListScreen`, `QuoteDetailScreen`) and their corresponding ViewModels (`QuoteListViewModel`, `QuoteDetailViewModel`). The screens receive immutable state and emit events through callbacks. They know nothing about the data source.
+- **Data layer** — `CachingQuoteRepository` handles network fetching and in-memory caching. `FavoritesStore` manages local persistence of starred quote IDs via `SharedPreferences`.
+- **Remote layer** — `QuoteApi` defines the network contract. `FakeQuoteApi` is the current implementation, simulating a real backend with configurable latency and a 30 % failure rate.
+
+<Info>
+  The app does **not** use a DI framework such as Hilt or Koin. All singletons are created once inside `AppContainer`, a plain Kotlin class instantiated in `Application.onCreate()`. This keeps the dependency graph explicit and easy to follow without any annotation processing overhead.
+</Info>
+
+## AppContainer
+
+`AppContainer` owns every app-wide singleton. It is constructed by `PRQuizApp` at startup and never recreated:
+
+```kotlin
+/** App-wide singletons. Created once in [com.example.prquizdemo.PRQuizApp]. */
+class AppContainer(context: Context) {
+  val quoteRepository: QuoteRepository = CachingQuoteRepository(api = FakeQuoteApi())
+
+  val favoritesStore: FavoritesStore =
+    SharedPreferencesFavoritesStore(context.getSharedPreferences("favorites", Context.MODE_PRIVATE))
+}
+```
+
+`PRQuizApp` stores the container on the `Application` instance and exposes it through a convenience extension property so any `Context`-aware site can reach the singletons without having to thread them through the call stack:
+
+```kotlin
+class PRQuizApp : Application() {
+  lateinit var container: AppContainer
+    private set
+
+  override fun onCreate() {
+    super.onCreate()
+    container = AppContainer(this)
+  }
+}
+
+val Context.appContainer: AppContainer
+  get() = (applicationContext as PRQuizApp).container
+```
+
+Inside `Navigation.kt`, the `MainNavigation` composable reads `LocalContext.current.appContainer` and passes the repository and store directly into each ViewModel factory. No service locator magic — just a property access.
+
+## Dependency Graph
+
+Dependencies flow in one direction only, from the UI layer down to the remote layer:
+
+- `QuoteListViewModel` → `QuoteRepository`, `FavoritesStore`
+- `QuoteDetailViewModel` → `QuoteRepository`, `FavoritesStore`
+- `CachingQuoteRepository` → `QuoteApi`
+- `SharedPreferencesFavoritesStore` → `SharedPreferences` (provided by the system via `AppContainer`)
+
+Neither `QuoteRepository` nor `FavoritesStore` knows anything about ViewModels or Compose. The `QuoteApi` interface knows only about the `Quote` data model, making it trivial to swap `FakeQuoteApi` for a real Retrofit implementation without touching any other layer.
+
+## State Management
+
+Both ViewModels use the same `StateFlow` + `combine()` pattern. Multiple private `MutableStateFlow` instances represent independent pieces of state (current query, loaded quotes, loading/error flags). They are merged into a single, immutable `State` object exposed to the UI:
+
+```kotlin
+val state: StateFlow<QuoteListState> =
+  combine(query, query.debounce(SEARCH_DEBOUNCE_MILLIS), quotes, favoritesStore.favoriteIds, loadState) {
+      rawQuery, debouncedQuery, quotes, favoriteIds, loadState ->
+      QuoteListState(
+        query = rawQuery,
+        items = quotes.filter { it.matches(debouncedQuery) }.toItems(favoriteIds),
+        isLoading = loadState.isLoading,
+        errorMessage = loadState.errorMessage,
+      )
+    }
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), QuoteListState(isLoading = true))
+```
+
+`SharingStarted.WhileSubscribed(5000)` means the upstream `combine()` pipeline is kept alive for **5 seconds after the last collector disappears**. During a configuration change (screen rotation) the Activity is torn down and recreated in well under 5 seconds, so the ViewModel's coroutine is never actually cancelled. This eliminates a redundant network round-trip that would otherwise happen every rotation.
+
+## Key Design Decisions
+
+<Accordion title="Why manual DI instead of Hilt?">
+  The app is intentionally small — two screens, two ViewModels, one repository, one store. Introducing Hilt would add annotation processing, generated code, and a non-trivial learning curve for contributors who may be new to Android. `AppContainer` achieves the same singleton guarantee in roughly 10 lines of plain Kotlin, and the entire dependency graph is visible at a glance without opening generated files.
+</Accordion>
+
+<Accordion title="Why is there a Mutex in CachingQuoteRepository?">
+  Both `QuoteListViewModel` and `QuoteDetailViewModel` call `repository.getQuotes()` independently when they are first created. On a cold start, if both calls arrive before the first one completes, a naïve implementation would fire two identical network requests. The `Mutex` ensures that the second caller waits for the first to finish and then reuses the cached result, so only one network call is ever in flight at a time.
+
+  ```kotlin
+  override suspend fun getQuotes(forceRefresh: Boolean): List<Quote> =
+    mutex.withLock {
+      val current = cached
+      if (!forceRefresh && current != null && now() - cachedAt < cacheTtlMillis) {
+        return@withLock current
+      }
+      try {
+        retryOnIoError { api.fetchQuotes() }.also {
+          cached = it
+          cachedAt = now()
+        }
+      } catch (e: Exception) {
+        current ?: throw e
+      }
+    }
+  ```
+</Accordion>
+
+<Accordion title="Why StateFlow instead of LiveData?">
+  `StateFlow` is a pure Kotlin/coroutines primitive — it works in non-Android modules, composes naturally with `combine()` and `debounce()`, and integrates directly with `collectAsStateWithLifecycle()` in Compose. `LiveData` requires the `android.arch` runtime, is observer-lifecycle-aware in a way that can be surprising in Compose, and offers no equivalent to `combine()`. For a Compose-first project there is no benefit to `LiveData`.
+</Accordion>

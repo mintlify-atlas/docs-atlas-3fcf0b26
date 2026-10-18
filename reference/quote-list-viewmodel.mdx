@@ -1,0 +1,167 @@
+---
+title: "QuoteListViewModel: Search, Refresh, and Favorites"
+sidebarTitle: "QuoteListViewModel"
+description: "Drives the quote list screen with a single StateFlow combining repository data, debounced search filtering, loading state, and reactive favorites."
+---
+
+`QuoteListViewModel` drives the quote list screen. It exposes a single `StateFlow<QuoteListState>` combining quotes from the repository, search filtering, loading state, and favorites. The entire screen state is derived reactively — there is no manual "rebuild UI" call; updating the query, toggling a favorite, or completing a network load all flow through the same `combine()` expression into a new `QuoteListState` that the Composable observes.
+
+## Constructor
+
+<ParamField path="repository" type="QuoteRepository" required>
+  The data source used to fetch quotes. `getQuotes(forceRefresh: Boolean)` is called on init and again whenever `onRefresh()` is invoked.
+</ParamField>
+
+<ParamField path="favoritesStore" type="FavoritesStore" required>
+  A reactive source of favorite IDs. Its `favoriteIds: StateFlow<Set<String>>` is combined with the quote list to produce the `isFavorite` flag on every `QuoteItem`.
+</ParamField>
+
+## QuoteItem
+
+`QuoteItem` is the per-row model emitted inside `QuoteListState.items`. It pairs a raw `Quote` with a pre-computed favorite flag so the UI never has to perform set lookups itself.
+
+```kotlin
+data class QuoteItem(val quote: Quote, val isFavorite: Boolean)
+```
+
+<ResponseField name="quote" type="Quote" required>
+  The underlying quote, containing `id: String`, `text: String`, and `author: String`.
+</ResponseField>
+
+<ResponseField name="isFavorite" type="Boolean" required>
+  `true` when the quote's ID is present in `FavoritesStore.favoriteIds` at the time the state was last derived. This value updates automatically whenever the favorites set changes — no explicit refresh is needed.
+</ResponseField>
+
+## QuoteListState
+
+`QuoteListState` is the single snapshot of everything the list screen needs to render. It is emitted by `state` as a new value whenever any of its constituent flows change.
+
+```kotlin
+data class QuoteListState(
+  val query: String = "",
+  val items: List<QuoteItem> = emptyList(),
+  val isLoading: Boolean = false,
+  val errorMessage: String? = null,
+)
+```
+
+<ResponseField name="query" type="String" required>
+  The current text in the search field. Defaults to an empty string, which shows all quotes. The list screen reflects this value immediately in the `OutlinedTextField` (no debounce on display), while filtering is applied only after the debounced value settles.
+</ResponseField>
+
+<ResponseField name="items" type="List<QuoteItem>" required>
+  The filtered and sorted list of quotes. Filtering applies case-insensitively against both `quote.text` and `quote.author`. The list is sorted with favorites first, then alphabetically by author within each group.
+</ResponseField>
+
+<ResponseField name="isLoading" type="Boolean" required>
+  `true` while a network request is in flight. The list screen renders a centered `CircularProgressIndicator` over the list when this is `true`. It is `false` once the request completes, regardless of whether it succeeded or failed.
+</ResponseField>
+
+<ResponseField name="errorMessage" type="String?" required>
+  Non-null when the last load attempt threw an exception **and** no previously cached data exists to show. The message is surfaced in the error color above the quote list. When a refresh fails but stale quotes are already displayed, the repository returns those stale quotes rather than throwing, so `errorMessage` may remain `null` even on a network error.
+</ResponseField>
+
+## Public API
+
+### state
+
+```kotlin
+val state: StateFlow<QuoteListState>
+```
+
+The observable UI state. Composables collect this with `collectAsStateWithLifecycle()` so collection respects the Compose lifecycle. The flow is shared with `SharingStarted.WhileSubscribed(5000)`, meaning it stays active for 5 seconds after the last subscriber drops — see [WhileSubscribed timeout](#whilesubscribed-timeout) below.
+
+---
+
+### onQueryChange
+
+```kotlin
+fun onQueryChange(newQuery: String)
+```
+
+Updates the raw search query. Call this directly from the `OutlinedTextField`'s `onValueChange` lambda.
+
+<ParamField path="newQuery" type="String" required>
+  The full replacement string for the current query. The ViewModel stores this in a `MutableStateFlow<String>` and applies a `debounce(300)` before using it for filtering, so rapid keystrokes do not trigger intermediate filter passes.
+</ParamField>
+
+<Note>
+  The `state.query` value updates **immediately** with each keystroke so the text field stays responsive. The debounced value (used for filtering) lags by up to 300 ms. This means users see their typed characters instantly while the filtered list settles slightly behind.
+</Note>
+
+---
+
+### onRefresh
+
+```kotlin
+fun onRefresh()
+```
+
+Forces a network refresh, bypassing the repository cache. Internally calls `load(forceRefresh = true)`, which passes `forceRefresh = true` to `repository.getQuotes()`. While the refresh is in flight, `state.isLoading` becomes `true`. On success, `state.items` is repopulated with fresh data.
+
+---
+
+### onToggleFavorite
+
+```kotlin
+fun onToggleFavorite(quoteId: String)
+```
+
+Toggles the favorite state for the given quote ID. The method reads the current value of `favoritesStore.favoriteIds` synchronously, flips the bit for `quoteId`, and calls `favoritesStore.setFavorite(quoteId, newState)` in a `viewModelScope` coroutine.
+
+<ParamField path="quoteId" type="String" required>
+  The `id` of the quote whose favorite status should be flipped.
+</ParamField>
+
+## State Derivation
+
+All five signals are merged in a single `combine()` call inside the `state` property initializer:
+
+```kotlin
+combine(
+  query,                          // raw query — reflected immediately in the text field
+  query.debounce(SEARCH_DEBOUNCE_MILLIS),  // debounced query — used for filtering
+  quotes,                         // loaded quote list from the repository
+  favoritesStore.favoriteIds,     // reactive set of favorited IDs
+  loadState,                      // isLoading + errorMessage
+) { rawQuery, debouncedQuery, quotes, favoriteIds, loadState ->
+    QuoteListState(
+      query = rawQuery,
+      items = quotes.filter { it.matches(debouncedQuery) }.toItems(favoriteIds),
+      isLoading = loadState.isLoading,
+      errorMessage = loadState.errorMessage,
+    )
+  }
+```
+
+The `toItems()` helper maps each `Quote` to a `QuoteItem`, then sorts the result:
+
+```kotlin
+private fun List<Quote>.toItems(favoriteIds: Set<String>): List<QuoteItem> =
+  map { QuoteItem(it, it.id in favoriteIds) }
+    .sortedWith(compareByDescending<QuoteItem> { it.isFavorite }.thenBy { it.quote.author })
+```
+
+Favorites always appear first; within each group, quotes are sorted A → Z by author.
+
+## WhileSubscribed Timeout
+
+```kotlin
+.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), QuoteListState(isLoading = true))
+```
+
+The `5000` millisecond timeout tells the upstream `combine()` to keep running for 5 seconds after the last collector disappears. On a screen rotation, the Composable unsubscribes and resubscribes within a few hundred milliseconds — well inside the window — so the in-flight network request and already-loaded quotes survive the configuration change without a duplicate API call.
+
+<Info>
+  If you lower this timeout to `0`, a screen rotation will cancel and restart the active coroutine, causing a redundant network request and a brief loading flash. The 5-second default is intentional.
+</Info>
+
+## Initial Load
+
+```kotlin
+init {
+  load(forceRefresh = false)
+}
+```
+
+`load(forceRefresh = false)` is called as soon as the ViewModel is created. It sets `loadState.isLoading = true` and launches a coroutine that calls `repository.getQuotes(forceRefresh = false)`. Because the `state` flow is seeded with `QuoteListState(isLoading = true)`, the very first emission the UI sees already has `isLoading = true` — there is no intermediate frame where `isLoading` is `false` before the coroutine starts.

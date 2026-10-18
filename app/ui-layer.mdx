@@ -1,0 +1,138 @@
+---
+title: "UI Layer: Compose Screens and ViewModels"
+sidebarTitle: "UI Layer"
+description: "How the PR Quiz Demo builds its UI with Jetpack Compose and Material3, including the QuoteListScreen, QuoteDetailScreen, and their ViewModel-driven state flows."
+---
+
+The UI layer is built entirely with **Jetpack Compose** and **Material3**. Each screen is a stateless composable that receives an immutable state object and emits user actions through plain Kotlin lambda callbacks. A paired ViewModel owns the mutable state and exposes it as a single `StateFlow<State>`, which the screen collects via `collectAsStateWithLifecycle()`. This split makes the screen composables trivial to preview and test in isolation from the ViewModel.
+
+## Quote List Screen
+
+`QuoteListScreen` renders the full browsing experience in a single `Column`:
+
+- An `OutlinedTextField` labelled "Search quotes or authors" lets the user filter by quote text or author name in real time, with a **Refresh** `TextButton` to its right.
+- When `errorMessage` is non-null, a `Text` in `MaterialTheme.colorScheme.error` (red) is shown directly below the search row.
+- A `LazyColumn` below renders one `QuoteCard` per item. Each card shows the quoted text and author in a `Column`, with a `TextButton` on the right displaying `★` for favorited quotes and `☆` for unfavorited ones. Tapping the card navigates to the detail screen; tapping the star toggles the favorite state.
+- A `CircularProgressIndicator` is centered over the list using a `Box` overlay whenever `isLoading` is `true`. It appears on first load and during pull-to-refresh.
+
+## QuoteListState
+
+The entire rendering decision for the list screen lives in one data class:
+
+```kotlin
+data class QuoteListState(
+  val query: String = "",
+  val items: List<QuoteItem> = emptyList(),
+  val isLoading: Boolean = false,
+  val errorMessage: String? = null,
+)
+```
+
+- **`query`** — the raw, unfiltered text in the search field. Updated on every keystroke so the field stays in sync with the user's input immediately.
+- **`items`** — the filtered, sorted list of `QuoteItem(val quote: Quote, val isFavorite: Boolean)` objects to render. Empty until the first load completes.
+- **`isLoading`** — `true` while a network request is in flight. Drives the `CircularProgressIndicator` overlay.
+- **`errorMessage`** — non-null when a network request fails after all retries and no stale cache is available. `null` on success or while loading.
+
+## Debounced Search
+
+The ViewModel keeps two flows for the search query — the raw value and a debounced one — and feeds both into `combine()`:
+
+```kotlin
+val state: StateFlow<QuoteListState> =
+  combine(
+    query,
+    query.debounce(SEARCH_DEBOUNCE_MILLIS), // 300 ms
+    quotes,
+    favoritesStore.favoriteIds,
+    loadState,
+  ) { rawQuery, debouncedQuery, quotes, favoriteIds, loadState ->
+    QuoteListState(
+      query = rawQuery,          // text field reflects every keystroke
+      items = quotes
+        .filter { it.matches(debouncedQuery) }  // filtering waits for typing to pause
+        .toItems(favoriteIds),
+      isLoading = loadState.isLoading,
+      errorMessage = loadState.errorMessage,
+    )
+  }
+  .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), QuoteListState(isLoading = true))
+```
+
+`query` feeds `rawQuery` directly into `QuoteListState.query`, keeping the text field responsive. `query.debounce(300L)` delays emission by 300 ms after the last keystroke before it updates `debouncedQuery`, so the `.filter()` call — which iterates the full quotes list — only runs once the user has stopped typing. This avoids re-filtering on every character in a long query.
+
+## Sorting
+
+After filtering, items are sorted so that favorites always appear first, and within each group quotes are ordered alphabetically by author name:
+
+```kotlin
+private fun List<Quote>.toItems(favoriteIds: Set<String>): List<QuoteItem> =
+  map { QuoteItem(it, it.id in favoriteIds) }
+    .sortedWith(compareByDescending<QuoteItem> { it.isFavorite }.thenBy { it.quote.author })
+```
+
+`compareByDescending { it.isFavorite }` ranks `true` before `false` (since `true > false` for `Boolean`). `.thenBy { it.quote.author }` breaks ties alphabetically. Because this runs inside the `combine()` pipeline it re-executes whenever either the quote list or the favorites set changes, keeping the sort order always up to date.
+
+## Quote Detail Screen
+
+`QuoteDetailScreen` handles three distinct states with a `when` expression inside a `Box`:
+
+```kotlin
+sealed interface QuoteDetailState {
+  data object Loading : QuoteDetailState
+  data object NotFound : QuoteDetailState
+  data class Loaded(val quote: Quote, val isFavorite: Boolean) : QuoteDetailState
+}
+```
+
+- **`Loading`** — shown while the repository call is in flight. Renders a centered `CircularProgressIndicator`.
+- **`NotFound`** — shown if `repository.getQuote(id)` returns `null` (the ID was valid once but the quote no longer exists in the source). Renders the message *"This quote doesn't exist anymore."* centered on screen.
+- **`Loaded`** — the happy path. Renders the full quote text in `headlineSmall` typography, the author in `titleMedium`, and a `Button` that reads either *"Add to favorites"* or *"Remove from favorites"* depending on `isFavorite`.
+
+A `TextButton` labelled "Back" is pinned to the top-start of the `Box` regardless of which state is active, so the user can always leave the screen.
+
+The ViewModel derives `QuoteDetailState` by combining the in-flight `Result<Quote?>?` with the live favorites set:
+
+```kotlin
+val state: StateFlow<QuoteDetailState> =
+  combine(quote, favoritesStore.favoriteIds) { quote, favoriteIds ->
+    when {
+      quote == null                  -> QuoteDetailState.Loading
+      quote.getOrNull() == null      -> QuoteDetailState.NotFound
+      else                           -> QuoteDetailState.Loaded(quote.getOrThrow()!!, quoteId in favoriteIds)
+    }
+  }
+  .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), QuoteDetailState.Loading)
+```
+
+Because `favoritesStore.favoriteIds` is a hot `StateFlow`, toggling a favorite on the detail screen causes an immediate recomposition that flips the button label — no additional network call required.
+
+## Root Composables
+
+Both screens follow the **Root / Screen** split pattern. The `Root` composable is the entry point called from `NavDisplay`; it holds the ViewModel reference, collects state, and bridges events:
+
+```kotlin
+@Composable
+fun QuoteListRoot(
+  viewModel: QuoteListViewModel,
+  onQuoteClick: (String) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val state by viewModel.state.collectAsStateWithLifecycle()
+  QuoteListScreen(
+    state = state,
+    onQueryChange = viewModel::onQueryChange,
+    onRefresh = viewModel::onRefresh,
+    onToggleFavorite = viewModel::onToggleFavorite,
+    onQuoteClick = onQuoteClick,
+    modifier = modifier,
+  )
+}
+```
+
+`QuoteListScreen` (and `QuoteDetailScreen`) receive only plain data and lambdas — no ViewModel reference — making them fully previewable with `@Preview` and independently testable by constructing a state value directly.
+
+`collectAsStateWithLifecycle()` from `androidx.lifecycle:lifecycle-runtime-compose` stops collection when the composable is not in the `STARTED` state (e.g., when the app is backgrounded), reducing unnecessary work and complementing `SharingStarted.WhileSubscribed(5000)` on the ViewModel side.
+
+<Tip>
+  For a full reference of every public method and property on the two ViewModels — including `onQueryChange`, `onRefresh`, `onToggleFavorite`, and `onToggleFavorite` on the detail side — see [QuoteListViewModel reference](/reference/quote-list-viewmodel) and [QuoteDetailViewModel reference](/reference/quote-detail-viewmodel).
+</Tip>

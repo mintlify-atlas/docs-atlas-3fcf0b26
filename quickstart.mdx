@@ -1,47 +1,77 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with PR Quiz Demo"
+sidebarTitle: "Quickstart"
+description: "Clone the repo, open it in Android Studio, run the quotes app on an emulator or device, and optionally trigger the GitHub Actions PR quiz on your own fork."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you through cloning PR Quiz Demo, opening it in Android Studio, and running the quotes app on an emulator or physical device. If you want to see the GitHub Actions quiz in action, the final step shows you how to open a pull request on your own fork so the workflow posts a quiz automatically.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you start, make sure you have the following installed and configured:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- **Android Studio Hedgehog** (2023.1.1) or newer
+- **Android SDK API 24+** (the app's `minSdk` is 24, `targetSdk` is 36)
+- **JDK 17** — the project's Gradle toolchain targets Java 17
+- **A GitHub account** — required only if you want to try the PR quiz workflow
 
-## Get started
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Open a terminal and clone the project from GitHub:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/PL-Coding-GmbH/PR-Quiz-Demo.git
     ```
+
+    This creates a `PR-Quiz-Demo` directory containing the Android app and the `.github/workflows/pr-quiz.yml` workflow file.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+  <Step title="Open in Android Studio">
+    Launch Android Studio, then choose **File → Open** and select the `PR-Quiz-Demo` folder you just cloned.
+
+    Android Studio detects the `settings.gradle.kts` at the root and begins a Gradle sync automatically. Wait for the sync to finish — all dependencies are fetched from Maven Central and Google Maven, so no additional setup is needed.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Run the app">
+    In the toolbar, select a connected physical device or an AVD running **API 24 or higher**, then click the **Run ▶** button (or press `Shift+F10`).
+
+    Gradle builds the debug APK, installs it, and launches the app. You will land on the **Quotes List** screen, which displays a set of programming quotes after a short simulated loading delay.
+  </Step>
+
+  <Step title="Explore the app features">
+    Try each of the core features:
+
+    - **Search** — type in the search bar at the top of the list to filter quotes by text or author in real time.
+    - **Detail view** — tap any quote card to navigate to its detail screen, which shows the full quote and author.
+    - **Favorites** — tap the star icon on the list or detail screen to mark a quote as a favorite. Starred quotes are highlighted and persist across app restarts.
+    - **Pull-to-refresh** — pull down on the quotes list to simulate a network reload. Due to the intentional random failures in `FakeQuoteApi`, the refresh occasionally shows an error banner before succeeding on retry.
+  </Step>
+
+  <Step title="Try the PR quiz workflow (optional)">
+    To see the GitHub Actions quiz in action you need your own fork:
+
+    1. **Fork** the repository on GitHub (`Fork` button at the top right of the repo page).
+    2. Clone your fork and create a new branch with at least one commit that changes a source file.
 
     ```bash
-    your-cli start
+    git checkout -b my-feature-branch
+    # make a small change, e.g. update a string resource
+    git commit -am "chore: explore PR quiz"
+    git push origin my-feature-branch
     ```
+
+    3. Open a **Pull Request** from `my-feature-branch` into your fork's `main` branch on GitHub.
+
+    The `PR Quiz` workflow triggers on `pull_request` events. Within a few seconds it posts a multiple-choice quiz inside the PR description based on the diff. Tick your answers in the checkboxes directly in the description, or post a comment starting with `/answer` (e.g. `/answer 1A 2C 3B`). The `pr-quiz` commit status turns green once all answers are correct.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What you'll see
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+When the app first loads, the Quotes List screen shows a circular progress indicator while `CachingQuoteRepository` fetches data from `FakeQuoteApi`. If the simulated network call fails, a dismissible error banner appears at the top of the screen — the repository automatically retries up to **3 times with exponential backoff** before surfacing the error to the UI. On success the list of quote cards appears. Favorites you starred in a previous session are already highlighted, because `SharedPreferencesFavoritesStore` persists them to a private `SharedPreferences` file that survives app restarts.
+
+<Tip>
+  Ready to understand how all the pieces fit together? Head to the [Architecture overview](/app/architecture) for a deep dive into the MVVM layers, the `AppContainer` manual DI pattern, `StateFlow`-driven UI state, and how the `CachingQuoteRepository` coordinates retries and caching.
 </Tip>

@@ -1,0 +1,106 @@
+---
+title: "Type-Safe Navigation with androidx.navigation3"
+sidebarTitle: "Navigation"
+description: "How the PR Quiz Demo uses androidx.navigation3 1.0.1 with @Serializable NavKey destinations and per-entry ViewModel scoping for safe, leak-free navigation."
+---
+
+The app uses **`androidx.navigation3`** (version `1.0.1`) for all screen transitions. Unlike the older Navigation Component, navigation3 models the back stack as a plain Kotlin `MutableList` of destination keys. Each destination is a `@Serializable` Kotlin class or object that implements `NavKey`, giving the compiler full type-safety with no string routes or argument bundles.
+
+## NavKey Destinations
+
+All destinations are declared in a single file, `NavigationKeys.kt`:
+
+```kotlin
+@Serializable data object QuoteList : NavKey
+
+@Serializable data class QuoteDetail(val quoteId: String) : NavKey
+```
+
+- **`QuoteList`** is a `data object` — a singleton. There is only ever one list screen in the back stack, so no parameters are needed.
+- **`QuoteDetail`** is a `data class` that carries the `quoteId` of the quote to display. The ID is embedded directly in the key, so the detail ViewModel always knows which quote to fetch without reading from a global shared state.
+
+## NavDisplay Setup
+
+`MainNavigation()` in `Navigation.kt` is the single composable that owns the entire navigation graph:
+
+```kotlin
+@Composable
+fun MainNavigation() {
+  val container = LocalContext.current.appContainer
+  val backStack = rememberNavBackStack(QuoteList)
+  val screenModifier = Modifier.safeDrawingPadding().padding(16.dp)
+
+  NavDisplay(
+    backStack = backStack,
+    onBack = { backStack.removeLastOrNull() },
+    entryDecorators =
+      listOf(
+        rememberSaveableStateHolderNavEntryDecorator(),
+        rememberViewModelStoreNavEntryDecorator(),
+      ),
+    entryProvider =
+      entryProvider {
+        entry<QuoteList> {
+          QuoteListRoot(
+            viewModel = viewModel { QuoteListViewModel(container.quoteRepository, container.favoritesStore) },
+            onQuoteClick = { backStack.add(QuoteDetail(it)) },
+            modifier = screenModifier,
+          )
+        }
+        entry<QuoteDetail> { key ->
+          QuoteDetailRoot(
+            viewModel =
+              viewModel { QuoteDetailViewModel(key.quoteId, container.quoteRepository, container.favoritesStore) },
+            onBack = { backStack.removeLastOrNull() },
+            modifier = screenModifier,
+          )
+        }
+      },
+  )
+}
+```
+
+Key parts to understand:
+
+- **`rememberNavBackStack(QuoteList)`** — creates a `MutableList<NavKey>` that is remembered across recompositions and starts with `QuoteList` as the only entry. This is the canonical starting point of the app.
+- **`entryProvider { entry<T> { ... } }`** — registers a composable for each destination type. The lambda receives the key for typed destinations (e.g., `key: QuoteDetail`), giving direct access to `key.quoteId`.
+- **`entryDecorators`** — a list of decorators applied to each entry. `rememberSaveableStateHolderNavEntryDecorator()` preserves `rememberSaveable` state for entries that are temporarily hidden; `rememberViewModelStoreNavEntryDecorator()` scopes a `ViewModelStore` to each entry.
+
+## ViewModel Scoping
+
+`rememberViewModelStoreNavEntryDecorator()` is what makes ViewModel lifecycle management correct. Each back stack entry gets its own `ViewModelStore`, so:
+
+- A `QuoteDetailViewModel` is created fresh when `QuoteDetail(quoteId)` is pushed onto the back stack.
+- When the user presses Back, that entry is popped and its `ViewModelStore` is cleared — the ViewModel's `onCleared()` is called and any running coroutines are cancelled.
+- The `QuoteListViewModel` is **not** affected; it lives in the `QuoteList` entry's store which remains on the stack.
+
+Without this decorator, all ViewModels would default to the Activity's store and live until the Activity is destroyed, which would cause stale state if the user navigated to the same detail screen twice.
+
+## Back Navigation
+
+Back navigation is handled by a single lambda passed to `NavDisplay.onBack`:
+
+```kotlin
+onBack = { backStack.removeLastOrNull() }
+```
+
+`removeLastOrNull()` pops the top entry if one exists and does nothing if the stack has only one entry, naturally preventing the app from navigating past the list screen. The same lambda is passed as `onBack` to `QuoteDetailRoot` so the screen's Back button also uses it:
+
+```kotlin
+entry<QuoteDetail> { key ->
+  QuoteDetailRoot(
+    ...
+    onBack = { backStack.removeLastOrNull() },
+  )
+}
+```
+
+Pushing a new detail screen is equally direct — the quote click callback adds a new `QuoteDetail` key to the stack:
+
+```kotlin
+onQuoteClick = { backStack.add(QuoteDetail(it)) }
+```
+
+<Note>
+  Both `QuoteList` and `QuoteDetail` are annotated with `@Serializable` (via `kotlinx.serialization`). This enables navigation3 to serialize and deserialize the back stack across process death and restoration, so the user returns to exactly the screen they were on when the system killed the app in the background. Without `@Serializable` on the `NavKey` types, the back stack could not survive process death.
+</Note>

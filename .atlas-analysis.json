@@ -1,0 +1,100 @@
+{
+  "projectType": "general",
+  "projectName": "PR Quiz Demo",
+  "projectDescription": "A demo Android app built with Jetpack Compose and MVVM that doubles as a GitHub Actions-powered PR quiz, challenging reviewers to answer questions about the diff before a pull request can be merged.",
+  "theme": "palm",
+  "primaryColor": "#6650A4",
+  "lightColor": "#D0BCFF",
+  "darkColor": "#3B2A6E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Android App",
+            "pages": [
+              "app/architecture",
+              "app/navigation",
+              "app/data-layer",
+              "app/ui-layer"
+            ]
+          },
+          {
+            "group": "PR Quiz Workflow",
+            "pages": [
+              "pr-quiz/overview",
+              "pr-quiz/how-it-works",
+              "pr-quiz/configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Data Layer",
+            "pages": [
+              "reference/quote",
+              "reference/quote-repository",
+              "reference/favorites-store",
+              "reference/retry"
+            ]
+          },
+          {
+            "group": "UI Layer",
+            "pages": [
+              "reference/quote-list-viewmodel",
+              "reference/quote-detail-viewmodel"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "reference/testing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Jetpack Compose UI with Material3 theming",
+    "MVVM architecture with StateFlow-based unidirectional data flow",
+    "androidx.navigation3 type-safe navigation with NavKey destinations",
+    "In-memory caching repository with configurable TTL and stale-on-error fallback",
+    "Exponential-backoff retry on IOException",
+    "SharedPreferences-backed favorites store with StateFlow reactivity",
+    "GitHub Actions PR Quiz workflow that gates merge on reviewer answers",
+    "Debounced search filtering across quote text and author fields",
+    "Manual dependency injection via AppContainer (no DI framework)",
+    "Comprehensive unit tests using kotlinx-coroutines-test"
+  ],
+  "publicApiSurface": [
+    "QuoteRepository.getQuotes(forceRefresh: Boolean): List<Quote>",
+    "QuoteRepository.getQuote(id: String): Quote?",
+    "CachingQuoteRepository(api, cacheTtlMillis, now)",
+    "FavoritesStore.favoriteIds: StateFlow<Set<String>>",
+    "FavoritesStore.setFavorite(id: String, isFavorite: Boolean)",
+    "retryOnIoError(attempts, initialDelayMillis, factor, block)",
+    "QuoteApi.fetchQuotes(): List<Quote>",
+    "QuoteListViewModel.state: StateFlow<QuoteListState>",
+    "QuoteListViewModel.onQueryChange(newQuery: String)",
+    "QuoteListViewModel.onRefresh()",
+    "QuoteListViewModel.onToggleFavorite(quoteId: String)",
+    "QuoteDetailViewModel.state: StateFlow<QuoteDetailState>",
+    "QuoteDetailViewModel.onToggleFavorite()",
+    "NavKey: QuoteList (data object)",
+    "NavKey: QuoteDetail(quoteId: String)",
+    "GitHub Actions workflow: pr-quiz.yml (triggers on pull_request, issue_comment)",
+    "/answer <n><letter> comment command for quiz submission"
+  ]
+}

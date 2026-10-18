@@ -1,0 +1,104 @@
+---
+title: "Configure the PR Quiz for Your Repository"
+sidebarTitle: "Configuration"
+description: "Install the PR Quiz workflow, adjust its constants, set required permissions, and learn the PR description format for embedding quiz questions."
+---
+
+The PR Quiz workflow is a single YAML file with no external dependencies — there is nothing to install from a registry and no secrets to provision beyond the default `GITHUB_TOKEN` that every Actions run already receives. Adapting it to another repository is a matter of copying the file, ensuring the right permissions are declared, and optionally tuning a handful of in-script constants.
+
+## Installation
+
+<Steps>
+  <Step title="Copy the workflow file">
+    Copy `.github/workflows/pr-quiz.yml` from the [PR-Quiz-Demo repository](https://github.com/PL-Coding-GmbH/PR-Quiz-Demo) into the same path inside your repository. No other files are required.
+  </Step>
+  <Step title="Commit and push">
+    Commit the file to your default branch (or any branch). GitHub Actions detects new workflow files automatically — no manual registration is needed. The workflow will activate on the next pull request event.
+  </Step>
+  <Step title="Require the status check (optional)">
+    To make the quiz a hard gate for merging, add `pr-quiz` as a required status check under **Settings → Branches → Branch protection rules** for your target branch. While this step is optional, it is the primary way to enforce that reviewers must pass before a PR can land.
+  </Step>
+</Steps>
+
+## Configuration constants
+
+The workflow script exposes three constants near the top of the `actions/github-script` step. Edit them directly in the YAML file.
+
+| Constant | Default | Description |
+|---|---|---|
+| `ALLOW_AUTHOR` | `true` | When `true`, the PR author can answer their own quiz and receive a passing status. Set to `false` to restrict grading to requested reviewers only — useful when you want an independent reviewer to verify the work. |
+| `CONTEXT` | `'pr-quiz'` | The name of the commit status context displayed in the PR checks UI and referenced in branch protection rules. Change this if you run multiple quizzes with different scopes (e.g. `'pr-quiz/security'`). |
+| `BOT` | `'github-actions[bot]'` | The login used to identify the bot's own comments when scanning for pass markers and result comments. Override this if the workflow runs under a custom GitHub App with a different bot username. |
+
+## Required permissions
+
+The workflow declares three explicit permissions. These are scoped to the minimum required and rely on the default `GITHUB_TOKEN` — no personal access token or additional secret is needed.
+
+```yaml
+permissions:
+  statuses: write
+  issues: write
+  pull-requests: write
+```
+
+| Permission | Purpose |
+|---|---|
+| `statuses: write` | Create and update commit statuses (`pending`, `failure`, `success`) on the PR's head commit via `repos.createCommitStatus`. |
+| `issues: write` | Post and update comments on the PR. GitHub's API models pull request comments as issue comments, so this scope covers both `createComment` and `updateComment`. |
+| `pull-requests: write` | Read the pull request object — including `requested_reviewers` and the PR body — and list reviews to build the eligibility set. |
+
+## Embedding a quiz in a PR
+
+The workflow recognises a quiz by the presence of two HTML comment markers in the PR description: `<!-- pr-quiz:start -->` and `<!-- pr-quiz:end -->`. Everything between them is the quiz block. Inside it, questions are written as bold headers with checkbox lists, and the answer key is hidden in a `<!-- pr-quiz-key:BASE64 -->` comment.
+
+```markdown
+<!-- pr-quiz:start -->
+**1. What does the Mutex in CachingQuoteRepository prevent?**
+- [ ] **A)** UI recompositions
+- [ ] **B)** Duplicate concurrent API calls
+- [ ] **C)** SharedPreferences race conditions
+- [ ] **D)** ViewModel leaks
+
+**2. What happens when a network refresh fails and a cache exists?**
+- [ ] **A)** The stale cache is returned
+- [ ] **B)** An exception is thrown
+- [ ] **C)** An empty list is returned
+- [ ] **D)** The app crashes
+
+<!-- pr-quiz-key:eyJpZCI6ImFiYzEyMyIsImFuc3dlcnMiOnsiMSI6IkIiLCIyIjoiQSJ9LCJleHBsYW5hdGlvbnMiOnsiMSI6IlRoZSBtdXRleCBwcmV2ZW50cy4uLiIsIjIiOiJUaGUgc3RhbGUgY2FjaGUuLi4ifX0= -->
+<!-- pr-quiz:end -->
+```
+
+The base64 value encodes a JSON object with the following structure:
+
+```json
+{
+  "id": "abc123",
+  "answers": {
+    "1": "B",
+    "2": "A"
+  },
+  "explanations": {
+    "1": "The mutex prevents duplicate concurrent API calls from hitting the network layer.",
+    "2": "The stale cache is returned so the UI always has data to display."
+  }
+}
+```
+
+Generate the key by running `Buffer.from(JSON.stringify(quizObject)).toString('base64')` in Node.js (or any base64 encoder), then paste the result between `<!-- pr-quiz-key:` and ` -->`. The `id` field should be a short unique string — changing it invalidates all existing passes for that quiz.
+
+## Concurrency
+
+The workflow sets a concurrency group tied to the PR number with `cancel-in-progress: false`:
+
+```yaml
+concurrency:
+  group: pr-quiz-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+```
+
+This setting is intentional. If two events fire in rapid succession — for example, a reviewer ticks a checkbox and posts a `/answer` comment within seconds — both runs are allowed to complete sequentially rather than having one cancel the other. Cancelling an in-progress grading run could silently discard a valid `success` result, leaving the PR stuck in `failure` or `pending` without any visible explanation.
+
+<Warning>
+  The answer key is base64-encoded, not encrypted. Anyone with read access to the pull request can decode it in seconds using any base64 tool or the browser console. The PR Quiz workflow is designed for learning and comprehension checks, not for high-stakes or adversarial assessment scenarios. Do not rely on it to prevent determined participants from looking up the correct answers.
+</Warning>

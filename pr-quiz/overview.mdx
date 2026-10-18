@@ -1,0 +1,75 @@
+---
+title: "PR Quiz: Automated Code Review Quizzes for GitHub PRs"
+sidebarTitle: "Overview"
+description: "Embed multiple-choice quiz questions in GitHub pull requests and automatically grade reviewer answers with a single GitHub Actions workflow."
+---
+
+The PR Quiz workflow is a self-contained GitHub Actions automation that embeds multiple-choice questions directly into pull request descriptions. When a reviewer opens the PR, they see a set of questions about the code changes. The workflow watches for answers — either via checkbox ticks in the description or a `/answer` comment — and grades them automatically, posting the result as a commit status. A PR cannot be considered fully reviewed until a qualified participant answers every question correctly.
+
+## Why use it
+
+<CardGroup cols={2}>
+  <Card
+    icon="book-open-check"
+    title="Enforce Code Comprehension"
+    href="/pr-quiz/how-it-works"
+  >
+    Reviewers prove they actually read the diff by answering targeted questions about the specific logic, trade-offs, or risks introduced in the PR before it can merge.
+  </Card>
+  <Card
+    icon="circle-check"
+    title="Zero Dependencies"
+    href="/pr-quiz/configuration"
+  >
+    The entire workflow runs inside `actions/github-script@v7` using only the built-in Octokit client. No external services, no npm packages, no secrets beyond the default `GITHUB_TOKEN`.
+  </Card>
+  <Card
+    icon="toggle-off"
+    title="Non-Blocking by Default"
+    href="/pr-quiz/configuration"
+  >
+    The `pr-quiz` commit status is advisory until you explicitly add it as a required check in your branch protection rules, giving you full control over when to enforce it.
+  </Card>
+  <Card
+    icon="bookmark"
+    title="Persistent Passes"
+    href="/pr-quiz/how-it-works"
+  >
+    A correct answer is remembered across subsequent commits. As long as the quiz questions themselves haven't changed, the `success` status survives a `git push` without requiring anyone to re-answer.
+  </Card>
+</CardGroup>
+
+## How answering works
+
+Reviewers have two ways to submit answers:
+
+**Option 1 — Tick checkboxes in the PR description.** The quiz block renders each question with lettered options as GitHub-flavoured Markdown checkboxes. Reviewers tick one box per question directly in the PR body. The workflow detects the change on the `edited` event and grades automatically.
+
+```markdown
+**1. What does the Mutex in CachingQuoteRepository prevent?**
+- [ ] **A)** UI recompositions
+- [x] **B)** Duplicate concurrent API calls
+- [ ] **C)** SharedPreferences race conditions
+- [ ] **D)** ViewModel leaks
+```
+
+**Option 2 — Post a `/answer` comment.** Anyone eligible can post a comment whose first line starts with `/answer` followed by space-separated `<question><letter>` pairs. All questions must be covered in a single comment.
+
+```
+/answer 1B 2A 3C
+```
+
+## Commit status lifecycle
+
+The workflow maintains a single commit status under the `pr-quiz` context. It moves through three states:
+
+| State | When it appears |
+|---|---|
+| `pending` | The quiz was found but not all questions have been answered yet, or a reviewer ticked multiple options for one question. |
+| `failure` | All questions were answered but at least one answer was wrong. The bot posts explanations in a collapsible block. |
+| `success` | Every answer is correct. The pass is recorded in a hidden comment marker so it survives new commits. |
+
+## Next steps
+
+- Read [How It Works](/pr-quiz/how-it-works) for a detailed walkthrough of the grading logic, pass persistence, and comment management.
+- Read [Configuration](/pr-quiz/configuration) to learn how to install the workflow, adjust constants, and embed a quiz in your own PR description.

@@ -1,0 +1,64 @@
+---
+title: "PR Quiz Demo: Android Architecture & Code Review Learning"
+sidebarTitle: "Introduction"
+description: "Explore a production-ready Android quotes app built with Jetpack Compose and MVVM, paired with a GitHub Actions workflow that turns every PR into an interactive code review quiz."
+---
+
+PR Quiz Demo is a two-in-one reference project. The first half is a fully functional Android app — a programming quotes reader built with Jetpack Compose, MVVM, Navigation3, manual dependency injection, and a caching data layer. The second half is a GitHub Actions workflow that automatically embeds a multiple-choice quiz into every pull request description, requiring reviewers to demonstrate genuine comprehension of the diff before the status check turns green. Together they form a practical template you can study, fork, and adapt: the app shows how modern Android pieces fit together, and the workflow shows how to make code review a learning exercise rather than a rubber-stamp.
+
+## What's in the project
+
+<CardGroup cols={2}>
+  <Card
+    icon="mobile"
+    title="Android App"
+    href="/app/architecture"
+  >
+    A Jetpack Compose quotes reader featuring a list screen, detail screen, search, and pull-to-refresh — wired together with Navigation3 and a hand-rolled DI container.
+  </Card>
+  <Card
+    icon="github"
+    title="PR Quiz Workflow"
+    href="/pr-quiz/overview"
+  >
+    A GitHub Actions script that posts a quiz to every PR description and blocks the merge status check until a reviewer answers all questions correctly.
+  </Card>
+  <Card
+    icon="database"
+    title="Data Layer"
+    href="/app/data-layer"
+  >
+    A `CachingQuoteRepository` wraps a `FakeQuoteApi` that simulates latency and random failures, with retry logic and in-memory caching to keep the UI resilient.
+  </Card>
+  <Card
+    icon="flask-conical"
+    title="Testing"
+    href="/reference/testing"
+  >
+    Unit tests for the repository and ViewModel using `kotlinx-coroutines-test`, plus Compose UI instrumented tests powered by Espresso and the Compose test rule.
+  </Card>
+</CardGroup>
+
+## Tech stack
+
+| Technology | Version |
+|---|---|
+| Kotlin | 2.3.20 |
+| Jetpack Compose BOM | 2026.03.01 |
+| Material3 | via Compose BOM |
+| Navigation3 (`androidx.navigation3`) | 1.0.1 |
+| Lifecycle / ViewModel | 2.10.0 |
+| Kotlinx Coroutines + StateFlow | 1.10.2 |
+| SharedPreferences (favorites persistence) | platform |
+| GitHub Actions (`actions/github-script`) | v7 |
+| Android Gradle Plugin | 9.0.1 |
+| Min SDK / Target SDK | 24 / 36 |
+| JVM toolchain | 17 |
+
+## Project goals
+
+PR Quiz Demo is deliberately a demo and reference project — not a production application. Every architectural decision (MVVM, manual DI via `AppContainer`, repository pattern, `StateFlow`-driven UI state) reflects patterns that are safe and straightforward to copy into real production apps. The code is intentionally free of third-party DI frameworks, complex abstractions, or generated code so that the architecture is easy to read and reason about. On the workflow side, the PR quiz turns the often-perfunctory code review step into something more engaging: reviewers must read the diff carefully enough to answer questions about it, and the author gets a richer conversation about the changes they made.
+
+<Note>
+  This project uses a `FakeQuoteApi` instead of a real network backend. The simulated network latency and random failures it introduces are **intentional** — they exist specifically to exercise the retry logic (up to 3 attempts with exponential backoff) and the in-memory caching layer in `CachingQuoteRepository`. Do not replace `FakeQuoteApi` with a no-op stub when exploring the project, as doing so will bypass the resilience patterns the architecture is designed to demonstrate.
+</Note>

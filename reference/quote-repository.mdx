@@ -1,0 +1,131 @@
+---
+title: "QuoteRepository and CachingQuoteRepository Reference"
+sidebarTitle: "QuoteRepository"
+description: "Reference for the QuoteRepository interface and its CachingQuoteRepository implementation, covering TTL caching, exponential-backoff retries, stale fallback, and mutex-guarded concurrency."
+---
+
+`QuoteRepository` is the interface your ViewModels depend on for all quote data. `CachingQuoteRepository` is the production implementation: it wraps `QuoteApi` with an in-memory TTL cache, exponential-backoff retries via `retryOnIoError`, and a stale-on-error fallback that keeps the app working offline after the first successful load.
+
+## QuoteRepository interface
+
+```kotlin
+interface QuoteRepository {
+    suspend fun getQuotes(forceRefresh: Boolean = false): List<Quote>
+    suspend fun getQuote(id: String): Quote?
+}
+```
+
+<ParamField path="getQuotes" type="suspend (forceRefresh: Boolean) -> List<Quote>">
+  Returns all quotes. When `forceRefresh` is `false` (the default) and a valid cached response exists, no network call is made. Set `forceRefresh = true` to bypass the cache unconditionally — used by pull-to-refresh in the list screen.
+</ParamField>
+
+<ParamField path="getQuote" type="suspend (id: String) -> Quote?">
+  Finds a single quote by its `id`. Internally calls `getQuotes()` and searches the result, so it benefits from the same cache. Returns `null` if no quote with the given ID exists.
+</ParamField>
+
+---
+
+## CachingQuoteRepository
+
+```kotlin
+class CachingQuoteRepository(
+    private val api: QuoteApi,
+    private val cacheTtlMillis: Long = 5 * 60 * 1000,
+    private val now: () -> Long = System::currentTimeMillis,
+) : QuoteRepository
+```
+
+<ParamField path="api" type="QuoteApi" required>
+  The data source to fetch quotes from. In production this is `FakeQuoteApi`; in unit tests it is replaced with a `FakeApi` stub that controls exactly which responses or errors are returned.
+</ParamField>
+
+<ParamField path="cacheTtlMillis" type="Long" default="300_000">
+  How long a successful response stays valid, in milliseconds. The default is five minutes (`5 * 60 * 1000`). Once this duration has elapsed since the last successful fetch, the next call to `getQuotes()` will trigger a new network request.
+</ParamField>
+
+<ParamField path="now" type="() -> Long" default="System::currentTimeMillis">
+  Injectable clock function. Defaults to the system wall clock. Override this in tests to advance time without sleeping — for example, set `now = { 1000L }` to simulate a moment 1 second after the epoch.
+</ParamField>
+
+---
+
+## Caching behaviour
+
+`CachingQuoteRepository` implements a simple read-through cache with three distinct code paths:
+
+**Cache hit**
+If `cached != null`, `forceRefresh` is `false`, and `now() - cachedAt < cacheTtlMillis`, the stored list is returned immediately without touching the network.
+
+**Cache miss or expired**
+When there is no cached data, when `forceRefresh` is `true`, or when the TTL has elapsed, the repository calls `api.fetchQuotes()` wrapped in `retryOnIoError`. On success, the result is stored alongside the current timestamp from `now()`.
+
+**Stale fallback**
+If the refresh attempt exhausts all retries and a previous response already exists, the `catch` block returns the stale list instead of re-throwing the exception. This keeps the app fully functional after the first load even when connectivity is lost indefinitely.
+
+```kotlin
+try {
+    retryOnIoError { api.fetchQuotes() }.also {
+        cached = it
+        cachedAt = now()
+    }
+} catch (e: Exception) {
+    current ?: throw e   // return stale data if available, otherwise propagate
+}
+```
+
+<Warning>
+  The stale fallback only activates when a previous successful response exists (`current != null`). On the very first launch with no connectivity, the exception is rethrown to the caller after all retries are exhausted.
+</Warning>
+
+---
+
+## Concurrency
+
+`CachingQuoteRepository` protects its mutable state with a `Mutex`:
+
+```kotlin
+private val mutex = Mutex()
+
+override suspend fun getQuotes(forceRefresh: Boolean): List<Quote> =
+    mutex.withLock {
+        // ...
+    }
+```
+
+The list screen and the detail screen both call `getQuotes()` on first composition — potentially at the same time. Without the mutex, each call would observe an empty cache and independently fire a network request. With the mutex, the second coroutine suspends at `withLock` until the first completes; by then the cache is populated, and the second caller returns the cached result without making a second request.
+
+<Tip>
+  The mutex is a `kotlinx.coroutines.sync.Mutex`, not a JVM `synchronized` block. It suspends rather than blocks the calling thread, making it safe to use inside coroutines running on a shared thread pool.
+</Tip>
+
+---
+
+## Usage example
+
+`AppContainer` wires the repository once at startup and shares the singleton across all ViewModels:
+
+```kotlin
+val quoteRepository: QuoteRepository = CachingQuoteRepository(api = FakeQuoteApi())
+```
+
+ViewModels receive the interface type, not the concrete class, so swapping `FakeQuoteApi` for a real Retrofit implementation requires no changes outside `AppContainer`.
+
+---
+
+## Testing
+
+The injectable `now` clock enables time-travel in unit tests without `Thread.sleep`:
+
+```kotlin
+private var time = 0L
+val repository = CachingQuoteRepository(api, cacheTtlMillis = 1000, now = { time })
+
+repository.getQuotes()  // populates cache at t=0
+time = 999              // still within TTL
+repository.getQuotes()  // cache hit — no second API call
+
+time = 1000             // TTL expired
+repository.getQuotes()  // cache miss — second API call fires
+```
+
+See [Testing](/reference/testing) for the full `CachingQuoteRepositoryTest` walkthrough.

@@ -1,0 +1,111 @@
+---
+title: "FavoritesStore: Reactive Favorites Persistence"
+sidebarTitle: "FavoritesStore"
+description: "Reference for FavoritesStore and SharedPreferencesFavoritesStore, covering StateFlow reactivity, atomic in-memory updates, and synchronous SharedPreferences persistence."
+---
+
+`FavoritesStore` manages which quote IDs the user has starred. It exposes the current set of favorites as a hot `StateFlow` so any screen observing it automatically reacts to changes the moment they happen — no polling, no manual refresh. The `SharedPreferencesFavoritesStore` implementation backs that reactive state with `SharedPreferences` for persistence across process restarts.
+
+## FavoritesStore interface
+
+```kotlin
+interface FavoritesStore {
+    val favoriteIds: StateFlow<Set<String>>
+    suspend fun setFavorite(id: String, isFavorite: Boolean)
+}
+```
+
+<ResponseField name="favoriteIds" type="StateFlow<Set<String>>">
+  Hot stream of the current set of favorited quote IDs. The initial value is the full set loaded from persistent storage at construction time — observers immediately receive the persisted state and do not need to wait for a `setFavorite` call. Because `StateFlow` always holds the latest value, a new collector that subscribes after favorites have been updated will receive the current set, not an empty one.
+</ResponseField>
+
+<ResponseField name="setFavorite" type="suspend (id: String, isFavorite: Boolean) -> Unit">
+  Adds `id` to the favorites set when `isFavorite` is `true`, or removes it when `false`. The in-memory `StateFlow` is updated atomically before the write to disk, so the UI reacts instantly.
+</ResponseField>
+
+---
+
+## SharedPreferencesFavoritesStore
+
+```kotlin
+class SharedPreferencesFavoritesStore(
+    private val prefs: SharedPreferences,
+) : FavoritesStore
+```
+
+<ParamField path="prefs" type="SharedPreferences" required>
+  The `SharedPreferences` file used to persist the set of favorited IDs. Favorites are stored under the key `"favorite_quote_ids"` as a `StringSet`. In production, `AppContainer` passes `context.getSharedPreferences("favorites", Context.MODE_PRIVATE)`.
+</ParamField>
+
+---
+
+## Reactivity
+
+`SharedPreferencesFavoritesStore` uses a `MutableStateFlow` backed by the persisted set and calls `updateAndGet` to modify it:
+
+```kotlin
+private val _favoriteIds = MutableStateFlow(
+    prefs.getStringSet(KEY, emptySet()).orEmpty().toSet()
+)
+override val favoriteIds: StateFlow<Set<String>> = _favoriteIds.asStateFlow()
+
+override suspend fun setFavorite(id: String, isFavorite: Boolean) {
+    val updated = _favoriteIds.updateAndGet { if (isFavorite) it + id else it - id }
+    withContext(Dispatchers.IO) { prefs.edit().putStringSet(KEY, updated).commit() }
+}
+```
+
+`updateAndGet` applies the lambda atomically and returns the new value. This means the `StateFlow` emits the updated set before `withContext` ever suspends onto the IO dispatcher — the UI sees the change with no perceptible lag regardless of how long the disk write takes.
+
+<Tip>
+  Because `StateFlow` uses value equality (`equals`), emitting a set with the same contents as the previous value will not trigger a new emission. Adding an ID that is already favorited, or removing one that is not, is therefore a no-op from the observer's perspective.
+</Tip>
+
+---
+
+## SharedPreferences write strategy
+
+```kotlin
+withContext(Dispatchers.IO) {
+    prefs.edit().putStringSet(KEY, updated).commit()
+}
+```
+
+`commit()` is used instead of the more common `apply()`. The difference matters here:
+
+- `apply()` queues the write asynchronously and returns immediately. The data may not be on disk if the process is killed right after the call.
+- `commit()` blocks until the write is confirmed. Inside `withContext(Dispatchers.IO)` this happens on a background thread, so the main thread is never blocked, but the coroutine does not resume until the data is safely persisted.
+
+<Warning>
+  Do not replace `commit()` with `apply()` here. On low-memory devices the Android system can terminate background processes between the async write and its completion, causing the user's favorite selections to be silently lost.
+</Warning>
+
+---
+
+## Usage example
+
+Collect `favoriteIds` in a ViewModel to drive UI state:
+
+```kotlin
+favoritesStore.favoriteIds.collect { ids ->
+    // ids is a Set<String> of favorited quote IDs
+    _uiState.update { it.copy(favoriteIds = ids) }
+}
+```
+
+Because `StateFlow` is hot and always has a current value, `collectAsStateWithLifecycle` in Compose composables also works without any additional setup.
+
+---
+
+## Wiring
+
+`AppContainer` constructs the store once and shares it as a singleton:
+
+```kotlin
+val favoritesStore: FavoritesStore =
+    SharedPreferencesFavoritesStore(
+        context.getSharedPreferences("favorites", Context.MODE_PRIVATE)
+    )
+```
+
+ViewModels receive the `FavoritesStore` interface, keeping them decoupled from the `SharedPreferences` implementation and easy to test with a simple in-memory fake.
